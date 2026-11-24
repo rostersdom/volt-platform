@@ -31,6 +31,10 @@ unsafe fn increment(data: ptr<char>) -> ptr<char>:
 unsafe fn echo_thread_data(data: ptr<char>) -> ptr<char>:
     return data
 
+unsafe fn try_busy_mutex(data: ptr<char>) -> ptr<char>:
+    if mutex_try_lock(data as ptr<Mutex>) != THREAD_EBUSY: panic("try-lock missed contention")
+    return data
+
 unsafe fn expect_invalid_join(slot: ptr<Thread>):
     let result = thread_join(slot)
     match result:
@@ -52,8 +56,32 @@ unsafe:
     if thread_spawn(0 as ptr<Thread>, callback(echo_thread_data), 0 as ptr<char>) != THREAD_EINVAL: panic("null thread slot")
 
     if mutex_init(0 as ptr<Mutex>) != THREAD_EINVAL: panic("null mutex")
+    if mutex_try_lock(0 as ptr<Mutex>) != THREAD_EINVAL: panic("null try-lock")
     if mutex_lock(&counter.lock) != THREAD_EINVAL: panic("uninitialized lock")
+    if mutex_try_lock(&counter.lock) != THREAD_EINVAL: panic("uninitialized try-lock")
     if mutex_unlock(&counter.lock) != THREAD_EINVAL: panic("uninitialized unlock")
+    if mutex_destroy(&counter.lock) != THREAD_EINVAL: panic("uninitialized destroy")
+
+    if mutex_init(&counter.lock) != 0: panic("init try-lock fixture")
+    # Copy before publication, so the test does not read concurrently used pthread storage.
+    let mutex_copy: Mutex = counter.lock
+    if mutex_init(&mutex_copy) != THREAD_EINVAL or mutex_destroy(&mutex_copy) != THREAD_EINVAL:
+        panic("copied mutex lifecycle")
+    if mutex_lock(&mutex_copy) != THREAD_EINVAL or mutex_try_lock(&mutex_copy) != THREAD_EINVAL or mutex_unlock(&mutex_copy) != THREAD_EINVAL:
+        panic("copied mutex operation")
+    if mutex_try_lock(&counter.lock) != 0: panic("uncontended try-lock")
+    if thread_spawn(&slots[0], callback(try_busy_mutex), (&counter.lock) as ptr<char>) != 0:
+        panic("spawn try-lock worker")
+    # Hold the mutex until join: blocking in place of returning EBUSY hangs this test.
+    match thread_join(&slots[0]):
+        Ok(data):
+            if data != ((&counter.lock) as ptr<char>): panic("try-lock worker result")
+        Err(status): panic("join try-lock worker")
+    if mutex_unlock(&counter.lock) != 0: panic("unlock after try-lock contention")
+    if mutex_try_lock(&counter.lock) != 0: panic("try-lock after unlock")
+    if mutex_unlock(&counter.lock) != 0 or mutex_destroy(&counter.lock) != 0: panic("cleanup try-lock fixture")
+    if mutex_try_lock(&counter.lock) != THREAD_EINVAL: panic("try-lock after destroy")
+
     for round in 0..ROUNDS:
         if mutex_init(&counter.lock) != 0: panic("mutex_init")
         if mutex_init(&counter.lock) != THREAD_EINVAL: panic("double init")
@@ -66,6 +94,8 @@ unsafe:
                 panic("thread_spawn")
         let copy: Thread = slots[0]
         expect_invalid_join(&copy)
+        if thread_spawn(&copy, callback(echo_thread_data), 0 as ptr<char>) != THREAD_EINVAL:
+            panic("spawn into a copied live slot")
         if thread_spawn(&slots[0], callback(echo_thread_data), 0 as ptr<char>) != THREAD_EINVAL:
             panic("spawn over an occupied slot")
         if mutex_unlock(&counter.lock) != 0: panic("parent unlock")

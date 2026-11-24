@@ -75,6 +75,20 @@ class VoltThreads(unittest.TestCase):
                 self.run_elf(binary, "4 24 192000\n")
 
     @unittest.skipUnless(supports_pthreads(), "requires glibc >= 2.34")
+    def test_condition_bounded_queue_stress(self):
+        binary = self.compile(FIXTURES / "vstd_thread_queue.volt", "queue")
+        for trial in range(5):
+            with self.subTest(trial=trial):
+                self.run_elf(binary, "4 24 49152\n")
+
+    @unittest.skipUnless(supports_pthreads(), "requires glibc >= 2.34")
+    def test_condition_timed_wait_and_lifecycle(self):
+        binary = self.compile(FIXTURES / "vstd_thread_timed_wait.volt", "timed_wait")
+        for trial in range(3):
+            with self.subTest(trial=trial):
+                self.run_elf(binary, "condition timeout ok\n")
+
+    @unittest.skipUnless(supports_pthreads(), "requires glibc >= 2.34")
     def test_concurrent_string_allocations_keep_contents(self):
         binary = self.compile(FIXTURES / "str_threads.volt", "strings")
         for trial in range(3):
