@@ -718,6 +718,9 @@ unsafe fn ccs_check_fn_abi(v_self: i64, v_fn: i64) -> i64:
     if cv_truth(cv_any(collect_7)):
         cc_error(cv_text("массив нельзя передавать по значению: используйте slice или ptr"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
         return 0
+    if cv_truth(cc_is_array(cv_getkey(v_fn, "sig_ret"))):
+        cc_error(cv_text("функции не могут возвращать массивы: возвращайте ptr"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+        return 0
     let logic_15: bool = cv_truth(v_foreign)
     if logic_15:
         let collect_11: i64 = cv_vector(CV_LIST)
@@ -1429,13 +1432,9 @@ unsafe fn ccs_typecheck_fn(v_self: i64, v_fn: i64) -> i64:
     else:
         cv_field(v_fn, "sret_slot", 0)
         cv_field(v_fn, "ret_snapshot_slot", 0)
-    if (not (cv_getkey(v_fn, "sig_ret") == 0)):
-        if cv_classes(cv_getkey(v_fn, "sig_ret"), "TSlice"):
-            cc_error(cv_text("возврат slice пока запрещён"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
-            return 0
-        if cv_truth(cc_is_array(cv_getkey(v_fn, "sig_ret"))):
-            cc_error(cv_text("функции не могут возвращать массивы: возвращайте ptr"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
-            return 0
+    if cv_classes(cv_getkey(v_fn, "sig_ret"), "TSlice"):
+        cc_error(cv_text("возврат slice пока запрещён"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+        return 0
     let choice_23: i64 = 0
     if (not (cv_getkey(v_fn, "body") == 0)):
         choice_23 = cv_getkey(v_fn, "body")
@@ -1954,6 +1953,9 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
     return 0
 
 unsafe fn ccs_truthy_check(v_self: i64, v_t: i64, v_e: i64) -> i64:
+    if v_t == 0:
+        cc_error(cv_text("void нельзя использовать как условие"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        return 0
     if cv_classes(v_t, "TWrapper"):
         cc_error(cv_text("Option/Result в условии всегда истинен (адрес); используйте match или postfix ?"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
         return 0
@@ -2012,7 +2014,8 @@ unsafe fn ccs_chk_cast(v_self: i64, v_a: i64, v_b: i64, v_e: i64, v_explicit: i6
         return 0
     if (cv_truth(cc_is_num(v_a)) and cv_truth(cc_is_num(v_b))):
         return CV_TRUE
-    if (cv_truth(cc_is_ptr(v_a)) and cv_truth(cc_is_ptr(v_b))):
+    # An explicit unsafe cast can attach a signature to a raw address, e.g. from dlsym.
+    if cv_truth(cc_is_ptr(v_a)) and (cv_truth(cc_is_ptr(v_b)) or (cv_truth(v_explicit) and cv_classes(v_b, "TFnPtr"))):
         return CV_TRUE
     if (cv_truth(cc_is_ptr(v_a)) and cv_truth(cc_is_int(v_b)) and (cv_equal(cv_getkey(v_b, "bits"), 515))):
         return CV_TRUE
@@ -2037,6 +2040,36 @@ unsafe fn ccs_is_callback_builtin(v_self: i64, v_name: i64) -> i64:
     if cv_truth(choice_1):
         choice_1 = cv_bool((not (cv_contains(cv_getkey(v_self, "struct_defs"), v_name))))
     return choice_1
+
+unsafe fn ccs_t_indirect_call(v_self: i64, v_e: i64, slot: i64) -> i64:
+    let name: i64 = cv_getkey(v_e, "name")
+    let file: i64 = cv_getkey(cv_getkey(v_self, "fn"), "file")
+    let line: i64 = cv_getkey(v_e, "line")
+    let signature: i64 = cv_getkey(slot, "typ")
+    if not cv_classes(signature, "TFnPtr"):
+        cc_error(cv_mod(cv_text("%s: вызов требует fnptr, получен %s"), cv_pair(name, cc_display(signature))), file, line)
+        return 0
+    ccs_require_unsafe(v_self, v_e, cv_text("косвенный вызов fnptr"))
+    let args: i64 = cv_getkey(v_e, "args")
+    let params: i64 = cv_getkey(signature, "params")
+    if cv_len(args) != cv_len(params):
+        let detail: i64 = cv_mod(cv_text(": %d аргумента(ов), ожидалось %d"), cv_pair(cv_length(args), cv_length(params)))
+        cc_error(cv_cat(name, detail), file, line)
+        return 0
+    for i in 0..cv_len(args):
+        let arg: i64 = cv_at(args, i)
+        let expected: i64 = cv_at(params, i)
+        let actual: i64 = ccs_tf(v_self, arg, expected)
+        if not cv_truth(cc_can_assign(actual, expected)):
+            let prefix: i64 = cv_mod(cv_text("%s: аргумент %d: "), cv_pair(name, cv_i(i + 1)))
+            let detail: i64 = cv_mod(cv_text("%s вместо %s"), cv_pair(cc_display(actual), cc_display(expected)))
+            cc_error(cv_cat(prefix, detail), file, cv_getkey(arg, "line"))
+            return 0
+    let callee: i64 = cc_VarRef(name, line)
+    cv_field(callee, "slot", slot)
+    cv_field(callee, "type", signature)
+    cv_field(v_e, "indirect_callee", callee)
+    return cv_getkey(signature, "result")
 
 unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
     let v_name: i64 = 0
@@ -2521,6 +2554,9 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
             if cv_truth(cc_is_ptr(v_at)):
                 ccs_require_unsafe(v_self, v_a, cv_text("печать raw-указателя"))
         return 0
+    # Keep existing functions, constructors and builtins ahead of local call targets.
+    let slot: i64 = ccs_find_slot(v_self, v_name)
+    if slot != 0: return ccs_t_indirect_call(v_self, v_e, slot)
     cc_error(cv_cat(cv_text("неизвестная функция "), cv_format(v_name, "r")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
     return 0
 
@@ -2637,14 +2673,16 @@ unsafe fn cc_check_expr(v_self: i64, v_defer: i64, v_expr: i64) -> i64:
         cc_check_expr(v_self, v_defer, cv_getkey(v_expr, "end"))
         return 0
     if cv_classes(v_expr, "VarRef"):
-        if (cv_contains(cv_getkey(v_self, "future_local_names"), cv_getkey(v_expr, "name"))):
+        v_slot_id = cv_get(v_expr, cv_text("slot"), 0)
+        # A resolved local is already bound to its visible slot, even if a
+        # later declaration has the same name.
+        if v_slot_id == 0 and cv_contains(cv_getkey(v_self, "future_local_names"), cv_getkey(v_expr, "name")):
             let pieces_1: i64 = cv_list()
             cv_push(pieces_1, cv_text("defer использует локальную переменную "))
             cv_push(pieces_1, cv_format(cv_getkey(v_expr, "name"), ""))
             cv_push(pieces_1, cv_text(", объявленную после defer"))
             cc_error(cv_join(cv_text(""), pieces_1), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_expr, "line"))
             return 0
-        v_slot_id = cv_get(v_expr, cv_text("slot"), 0)
         let choice_2: i64 = 0
         if cv_classes(v_slot_id, "SlotK"):
             choice_2 = v_slot_id
@@ -2681,6 +2719,7 @@ unsafe fn cc_check_expr(v_self: i64, v_defer: i64, v_expr: i64) -> i64:
                 if cv_classes(v_expr, "Call"):
                     if cv_has(v_expr, cv_text("callback_target")):
                         return 0
+                    cc_check_expr(v_self, v_defer, cv_getkey(v_expr, "indirect_callee"))
                     let seq_7: i64 = cv_getkey(v_expr, "args")
                     for index_6 in 0..cv_len(seq_7):
                         v_arg = cv_at(seq_7, index_6)

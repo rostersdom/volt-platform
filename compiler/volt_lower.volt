@@ -1609,6 +1609,12 @@ unsafe fn cce_abi_in(emitter: i64, typ: i64, place: CCEAbiLocation, offset: i64)
             cce_abi_mov(emitter, "mov", scratch, cce_abi_mem("rbp", 16 + place.index + word * 8, width))
             cce_abi_mov(emitter, "mov", dest, scratch)
 
+unsafe fn cce_abi_c_result(emitter: i64, result: i64) -> i64:
+    # The C ABI leaves the unused high bits of narrow scalar results unspecified.
+    if cv_truth(cc_is_bool(result)): cce_e(emitter, cv_text("movzx eax, al"))
+    else: cce_narrow(emitter, result)
+    return result
+
 unsafe fn cce_call_gen(v_self: i64, v_e: i64, v_args: i64, v_sig_params: i64, v_ret_type: i64, v_label: i64) -> i64:
     let v_base: i64 = 0
     let v_ret_idx: i64 = 0
@@ -1616,6 +1622,16 @@ unsafe fn cce_call_gen(v_self: i64, v_e: i64, v_args: i64, v_sig_params: i64, v_
     let v_temp: i64 = 0
     let v_s: i64 = 0
     v_base = cv_getkey(v_self, "nt")
+    let callee: i64 = cv_getkey(v_e, "indirect_callee")
+    let target: i64 = v_label
+    if callee != 0:
+        # Capture the address before arguments, which can call out or change its slot.
+        let index: i64 = cce_talloc(v_self)
+        cce_expr_value(v_self, callee, 0)
+        cce_e(v_self, cv_text("test rax, rax"))
+        cce_trap_on(v_self, cv_text("z"), cv_text("volt: null fnptr call\n"))
+        target = cce_abi_mem("rbp", cv_index(cce_toff(v_self, index)), 8)
+        cce_abi_mov(v_self, "mov", target, cv_text("rax"))
     let choice_1: i64 = 0
     if cv_classes(v_ret_type, "TWrapper"):
         choice_1 = cce_talloc(v_self)
@@ -1627,7 +1643,9 @@ unsafe fn cce_call_gen(v_self: i64, v_e: i64, v_args: i64, v_sig_params: i64, v_
     let args: ptr<CCEAbiArg> = cv_alloc(count * sizeof(CCEAbiArg)) as ptr<CCEAbiArg>
     for i in 0..count:
         let v_a: i64 = cv_at(v_args, i)
-        let v_pt: i64 = cv_at(cv_at(v_sig_params, i), 1)
+        let v_pt: i64 = cv_at(v_sig_params, i)
+        # Named signatures store (name, type) pairs; fnptr stores just the types.
+        if callee == 0: v_pt = cv_at(v_pt, 1)
         let v_idx: i64 = cce_talloc(v_self)
         let place: CCEAbiLocation = cce_abi_next(&placement, v_pt)
         args[i] = CCEAbiArg(v_pt, v_idx, place)
@@ -1735,7 +1753,7 @@ unsafe fn cce_call_gen(v_self: i64, v_e: i64, v_args: i64, v_sig_params: i64, v_
     for i in 0..count:
         let arg: CCEAbiArg = args[i]
         cce_abi_out(v_self, arg.typ, arg.place, cv_index(cce_toff(v_self, arg.temp)))
-    cce_e(v_self, cv_cat(cv_text("call "), cv_format(v_label, "")))
+    cce_e(v_self, cv_cat(cv_text("call "), cv_format(target, "")))
     if stack_size != 0:
         cce_e(v_self, cv_cat(cv_text("add rsp, "), cv_str(cv_i(stack_size))))
     if (not (v_ret_idx == 0)):
@@ -1763,6 +1781,11 @@ unsafe fn cce_expr_call(v_self: i64, v_e: i64) -> i64:
     let v_fn: i64 = 0
     let v_lbl: i64 = 0
     v_name = cv_getkey(v_e, "name")
+    let callee: i64 = cv_getkey(v_e, "indirect_callee")
+    if callee != 0:
+        let signature: i64 = cv_getkey(callee, "type")
+        let result: i64 = cce_call_gen(v_self, v_e, cv_getkey(v_e, "args"), cv_getkey(signature, "params"), cv_getkey(signature, "result"), 0)
+        return cce_abi_c_result(v_self, result)
     if cv_has(v_e, cv_text("callback_target")):
         v_fn = cv_getkey(v_e, "callback_target")
         let pieces_1: i64 = cv_list()
@@ -1790,10 +1813,7 @@ unsafe fn cce_expr_call(v_self: i64, v_e: i64) -> i64:
         if not external:
             v_lbl = cc_function_label(cv_get(v_fn, cv_text("mangled_name"), cv_getkey(v_fn, "name")), cv_getkey(v_fn, "file"))
         let result: i64 = cce_call_gen(v_self, v_e, cv_getkey(v_e, "args"), cv_getkey(v_fn, "sig_params"), cv_getkey(v_fn, "sig_ret"), v_lbl)
-        # The C ABI leaves the unused high bits of narrow scalar results unspecified.
-        if external or raw:
-            if cv_truth(cc_is_bool(result)): cce_e(v_self, cv_text("movzx eax, al"))
-            else: cce_narrow(v_self, result)
+        if external or raw: return cce_abi_c_result(v_self, result)
         return result
     if (cv_contains(cc_k_irtis, v_name)):
         return cce_call_irtis(v_self, v_e, cv_subscript(cc_k_irtis, v_name))

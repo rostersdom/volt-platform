@@ -553,6 +553,16 @@ print(sizeof(Mixed), alignof(Mixed))
         self.assert_compile_error(declaration + "print(fixed(1, 2, 3, 4, 5, 6))\n", "6 аргумента вместо 7")
         self.assert_compile_error(declaration + "print(fixed(1, 2, 3, 4, 5, 6, 7, 8))\n", "8 аргумента вместо 7")
 
+    def test_unused_array_returns_are_rejected_at_signature_check(self):
+        for declaration in (
+            "extern fn array_result() -> [3]i64\n",
+            "native fn array_result() -> [3]i64:\n{\n    NOP\n}\n",
+            # The bad signature must be diagnosed before checking any body.
+            "fn earlier():\n    missing()\nfn array_result() -> [3]i64:\n    return\n",
+        ):
+            with self.subTest(declaration=declaration):
+                self.assert_compile_error(declaration, "функции не могут возвращать массивы")
+
     def test_c_callback_checks_signature_and_uses_the_system_v_abi(self):
         declaration = ('link "-lc"\n'
                        'unsafe extern fn qsort(data: ptr<i32>, count: u64, size: u64, '
