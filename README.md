@@ -137,6 +137,7 @@ guarantees of this version.
 | Command | Result |
 | --- | --- |
 | `./volt prog.volt -o prog` | Write a Linux ELF executable. `--out` is an alias for `-o`. |
+| `./volt prog.volt -g -o prog` | Add DWARF 4 mappings from named functions to their declaration lines. |
 | `./volt prog.volt --run` | Compile and return the program's exit status; remove the temporary executable when `-o` is not supplied. |
 | `./volt prog.volt --emit-asm` | Emit the assembly listing only; the default name is derived from the source path. |
 | `./volt prog.volt -S prog.s -o prog` | Write both an assembly listing and an ELF executable. `--asm-file` is an alias for `-S`. |
@@ -146,6 +147,11 @@ guarantees of this version.
 `--target linux-x86_64` is the default and only target. With no output path,
 the compiler puts the ELF in `$TMPDIR` or `/tmp`. The bootstrap does not use
 an external assembler or linker.
+
+Errors in loaded sources include a bounded excerpt and a byte column when
+known. `-g` works with ELF output only. It also maps the startup wrapper to
+the first executable statement in the entry file, when present. It does not
+map each statement or describe local variables and types.
 
 ### 1. Bindings, types, and conversions
 
@@ -268,14 +274,15 @@ supported. Functions are called by name. `unsafe fn` permits unsafe operations
 in its body and can only be called in an unsafe context.
 
 - The x86-64 ABI has six integer-class argument registers (`rdi`, `rsi`,
-  `rdx`, `rcx`, `r8`, `r9`) and eight floating-point registers (`xmm0` through
-  `xmm7`). The implementation does not support stack arguments. A slice consumes
-  two integer-class registers. A structure or built-in tagged value passed to
-  ordinary VOLT code consumes one pointer register and is copied into the
-  callee's storage. Aggregate results use a hidden caller-owned result pointer
-  (`sret`), which consumes one of the six integer-class registers. The return
-  value is snapshotted before `defer` runs. Arrays cannot be passed or returned
-  by value; a slice can be passed but not returned.
+  `rdx`, `rcx`, `r8`, `r9`) and eight independently allocated floating-point
+  registers (`xmm0`–`xmm7`). Arguments that do not fit in their register class
+  are placed in 8-byte stack slots in declaration order. The stack is aligned
+  to 16 bytes before a call. A slice uses two integer registers or goes entirely
+  on the stack. Ordinary VOLT functions receive structures and tagged values
+  through implicit pointer arguments and copy them into local storage. A hidden
+  caller-owned result pointer (`sret`) uses the first integer register, and the
+  result is saved before `defer` runs. Arrays cannot be passed or returned by
+  value; a slice can be passed but not returned.
 - **Generic functions** such as `fn identity<T>(value: T) -> T:` are specialised
   at compile time for each inferred type combination. Inference uses arguments,
   including type arguments of nested structures and pointers. Conflicting types
@@ -283,18 +290,21 @@ in its body and can only be called in an unsafe context.
   not implemented.
 - **C FFI:** `unsafe extern fn` declares an external symbol with a fixed
   signature. `link "-lc"` requests a shared ELF library. A C-facing call uses
-  supported scalar and pointer types. Pass aggregate data via pointers to
+   supported scalar and pointer types. A VOLT enum uses `i64`, not C's enum
+   representation. Pass aggregate data via pointers to
   caller-owned storage; the VOLT aggregate ABI is not the C ABI. Arrays,
   structures, slices, and tagged values by value, variadic calls, and automatic
   VOLT function exports are not supported in foreign signatures.
 - **Callbacks:** `fnptr<(A, B) -> R>` or `fnptr<(A, B)>` (no return value)
-  describes a supported scalar C signature. In `unsafe`, pass
-  `callback(named_function)` to C; types and the register limits are checked.
-  VOLT cannot call a `fnptr` value directly or capture a lexical environment.
+   describes a supported scalar C signature. In `unsafe`, pass
+   `callback(named_function)` to C. The compiler checks the signature; excess
+   scalar arguments use stack slots just as in direct C calls.
+   VOLT cannot call a `fnptr` value directly or capture a lexical environment.
 - **Native code:** `native fn` uses a supported subset of Intel x86-64
   assembly and is always unsafe. The compiler emits the prologue and epilogue;
   the body must not contain `ret`. The function must honour the calling
-  convention, including any required preservation of registers and the stack.
+   convention, including any required preservation of registers and the stack.
+   The first stack argument is at `[rbp+16]` after the prologue.
 
 ```volt
 native fn raw_add(a: i64, b: i64) -> i64:
@@ -417,12 +427,13 @@ stable C type layout or call contract.
   of a local array. Bounds are signed integers and must satisfy
   `0 <= start <= end <= len(data)`; an empty slice is valid. A slice stores a
   pointer and element count, not capacity, and has 8-byte alignment. Indexing
-  and `len` use that count. The compiler rejects writes through the slice and
-  direct writes to a borrowed array or a second slice of it in the same
-  function. It does not implement a full borrow checker or lifetime inference.
-  No mutable slices, slice of a
-  slice, implicit array-to-slice conversion, slice returns, aggregate/global
-  slice storage, or slice C ABI.
+  and `len` use that count. Overlapping read-only slices and reads of the array
+  are allowed. Writes through a slice or directly into the borrowed array are
+  rejected until the borrowing block and its `defer` actions finish. A slice
+  binding cannot be copied through `let` or reassigned. Taking a raw address
+  from a slice requires `unsafe`. No mutable slices, slice of a slice,
+  implicit array-to-slice conversion, slice returns, aggregate/global slice
+  storage, or slice C ABI. There is no last-use analysis or raw-pointer lifetime checking.
 - **Raw pointers:** `&place` produces a pointer to an addressable target.
   Dereference, indexing, accessing a field through a pointer, pointer
   arithmetic, and raw casts require `unsafe`. `p + i`, `i + p`, and `p - i`
@@ -485,9 +496,12 @@ provide a full libc startup/shutdown protocol.
 | Linux runtime | `read`, `write`, `write_all`, `open`, `close`, `mmap`, `munmap`, and `brk` expose low-level operations. Callers must obey the raw-memory contract and check return values; these are not ownership abstractions. |
 | `io`, `str` | `print` separates values with spaces and appends a newline; `put_*`, `put_err`, `put_errnl`, and `nl` support explicit output. Integer output is decimal; floats normally use six fractional digits, with scientific notation for large values. Writes fail with `panic` rather than silently dropping an error. `str_len`, `str_eq`, `str_concat`, and `str_repeat` operate on NUL strings. |
 | [`math`](vstd/math.volt), [`math3d`](vstd/math3d.volt) | Numeric constants and helpers (including `powi`, `ipowi`, and `hypot`), vectors and matrices. Integer powers and factorials are checked; integer negative powers truncate the reciprocal toward zero. |
-| [`time`](vstd/time.volt), [`fs`](vstd/fs.volt) | `monotonic_ms() -> Result<i64, i32>` measures intervals, not wall time. `file_size(path) -> Result<i64, i32>` uses `statx` and reports the logical size, including holes in sparse files. Errnos in `Err` are positive. |
+| [`time`](vstd/time.volt) | `monotonic_ms() -> Result<i64, i32>` measures intervals, not wall time. |
+| [`fs`](vstd/fs.volt) | `file_size` returns the logical size, including holes. `create_dir` creates one directory, `rename_path` moves an entry without replacing the destination, and `remove_file`/`remove_dir` delete a file or symlink and an empty directory, respectively. These are synchronous Linux operations with positive `errno` in `Err`. |
 | [`process`](vstd/process.volt) | `argc`, `arg_at`, and the raw environment read the initial Linux stack. `arg_at` returns a borrowed string or `Err(22)` for an invalid index. `process_exec_wait` runs an executable without a shell. |
 | [`event`](vstd/event.volt) | `poll` checks multiple descriptors and writes `revents`; it is unsafe because it writes to the backing array of a read-only slice. `poll_readable` returns flags for one descriptor. The timeout is signed `i32` milliseconds (`-1` waits indefinitely, `0` checks without waiting). `poll` returns 0 on a timeout. Nonblocking monotonic `timerfd` supports one-shot and periodic timers via `timer_create`, `timer_set`, `timer_read`, and `timer_close`; `first_ms = 0` disarms, and a read without an expiration reports `Err(11)`. |
+| Stream I/O in [`event`](vstd/event.volt) | `stream_pair` opens two local nonblocking socket ends. Close both with `event_close`. `try_read`/`try_write` attempt a single operation on a connected stream socket; handle short counts and `EAGAIN` with `poll`. Reads return zero at EOF and writes do not raise `SIGPIPE`. |
+| [`thread`](vstd/thread.volt) | Optional pthreads on Linux x86-64 with glibc ≥ 2.34. `thread_spawn`/`thread_join` and `mutex_init`/`mutex_lock`/`mutex_unlock`/`mutex_destroy` are unsafe. Keep their slots at stable addresses, keep worker data alive until a successful join, and synchronize accesses explicitly. No compiler thread-safety checks. |
 | [`bytes`](vstd/bytes.volt), [`buffer`](vstd/buffer.volt), [`bytevec`](vstd/bytevec.volt), [`utf8`](vstd/utf8.volt) | Counted storage, checked byte handles, and UTF-8 code-point helpers. `utf8_next` consumes one byte on invalid input and returns U+FFFD. |
 | [`json`](docs/json.md) | Read one UTF-8 JSON document (8 MiB, at most 64 nested containers); inspect fields, array elements, booleans and exact numeric spans. Decoding and quoting strings use caller-owned buffers and byte lengths. `JsonValue` borrows the unchanged input. No general object/array serializer. |
 | [`http`, `dns`, `tls`](docs/http.md) | Bounded HTTP/IPv4 GET, hostname resolution, and HTTPS through OpenSSL 3 with certificate and hostname checks. This is not a general socket or async runtime API. |

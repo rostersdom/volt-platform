@@ -548,12 +548,10 @@ print(sizeof(Mixed), alignof(Mixed))
         self.assertEqual((result.returncode, result.stdout, result.stderr),
                          (0, "3.750000 3.750000\n", ""))
 
-    def test_excess_ffi_integer_arguments_are_diagnosed(self):
-        self.assert_compile_error(
-            "extern fn too_many(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64) -> i64\n"
-            "print(too_many(1, 2, 3, 4, 5, 6, 7))\n",
-            "больше 6 целых аргументов не поддерживается",
-        )
+    def test_fixed_ffi_arity_is_checked_with_stack_arguments(self):
+        declaration = "extern fn fixed(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64) -> i64\n"
+        self.assert_compile_error(declaration + "print(fixed(1, 2, 3, 4, 5, 6))\n", "6 аргумента вместо 7")
+        self.assert_compile_error(declaration + "print(fixed(1, 2, 3, 4, 5, 6, 7, 8))\n", "8 аргумента вместо 7")
 
     def test_c_callback_checks_signature_and_uses_the_system_v_abi(self):
         declaration = ('link "-lc"\n'
@@ -1411,11 +1409,15 @@ match y:
             "fn f(x: Option<i64>) -> i64:\n    return 0\nlet wrong: Result<i64, i32> = Ok(1)\nprint(f(wrong))\n",
             "аргумент 'x': Result<i64, i32> вместо Option<i64>",
         )
-        self.assert_compile_error(
-            "fn f(a: Option<i64>, b: i64, c: i64, d: i64, e: i64, f: i64) -> Option<i64>:\n"
-            "    return a\n",
-            "больше 6 целых ABI-аргументов",
-        )
+        stack_with_sret = '''
+fn f(a: i64, b: i64, c: i64, d: i64, e: i64, x: Option<i64>) -> Option<i64>:
+    return x
+match f(1, 2, 3, 4, 5, Some(13)):
+    Some(v): print(v)
+    None: panic("none")
+'''
+        result = self.compile_run(stack_with_sret)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "13\n", ""))
         floats = '''
 fn f(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64) -> f64:
     return a + h
@@ -1423,11 +1425,13 @@ print(f(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0))
 '''
         result = self.compile_run(floats)
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "9.000000\n", ""))
-        self.assert_compile_error(
-            "fn f(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, i: f64) -> f64:\n"
-            "    return a\n",
-            "больше 8 float ABI-аргументов",
-        )
+        stack_float = '''
+fn f(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, i: f64, n: i64) -> f64:
+    return a + 2.0 * h + 3.0 * i + n as f64
+print(f(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.5, 11))
+'''
+        result = self.compile_run(stack_float)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "56.500000\n", ""))
 
     def test_wrapper_containment_diagnostics_preserve_source_location(self):
         source = '''fn f() -> i64:

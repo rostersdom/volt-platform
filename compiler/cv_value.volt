@@ -140,6 +140,15 @@ unsafe fn cv_pos(v: i64, key: i64) -> i64:
     let step: i64 = 2
     if p.kind == CV_SET: step = 1
     let i: i64 = 0
+    # AST fields and small dictionaries mostly use string keys. Don't enter
+    # recursive value equality for each candidate when a byte comparison suffices.
+    if key & 7 == CV_TEXT:
+        let text: ptr<char> = cv_cptr(key)
+        while i < p.len:
+            let entry: i64 = p.values[i]
+            if entry == key or (entry & 7 == CV_TEXT and cv_compare_bytes(cv_cptr(entry), text) == 0): return i
+            i += step
+        return -1
     while i < p.len:
         if cv_equal(p.values[i], key): return i
         i += step

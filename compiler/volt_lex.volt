@@ -15,13 +15,13 @@ unsafe fn cc_lex_token(tokens: i64, kind: string, value: i64, line: i64, indent:
     if floating: cv_field(t, "f", CV_TRUE)
     cv_push(tokens, t)
 
-unsafe fn cc_escape(code: char, file: i64, line: i64) -> char:
+unsafe fn cc_escape(code: char, file: i64, line: i64, column: i64) -> char:
     if code == 'n': return '\n'
     if code == 't': return '\t'
     if code == 'r': return '\r'
     if code == '0': return '\0'
     if code == '\\' or code == '"' or code == '\'': return code
-    cc_error(cv_cat(cv_text("неизвестный escape \\"), cv_char(code as i64)), file, cv_i(line))
+    cc_error_at(cv_cat(cv_text("неизвестный escape \\"), cv_char(code as i64)), file, cv_i(line), column)
     return '\0'
 
 unsafe fn cc_utf8(p: ptr<char>, pos: ptr<i64>, length: i64) -> i64:
@@ -67,13 +67,15 @@ unsafe fn cc_lex(source: i64, file: i64) -> i64:
             while pos < n and p[pos] != '\n': pos += 1
             continue
         if c == '/' and p[pos + 1] == '*':
+            let comment_line: i64 = line
+            let comment_column: i64 = pos - begin + 1
             pos += 2
             while pos < n and (p[pos] != '*' or p[pos + 1] != '/'):
                 if p[pos] == '\n':
                     line += 1
                     begin = pos + 1
                 pos += 1
-            if pos == n: cc_error(cv_text("незакрытый /* комментарий"), file, cv_i(line))
+            if pos == n: cc_error_at(cv_text("незакрытый /* комментарий"), file, cv_i(comment_line), comment_column)
             pos += 2
             continue
         let ind: i64 = pos - begin
@@ -85,16 +87,17 @@ unsafe fn cc_lex(source: i64, file: i64) -> i64:
                 if p[end] == '\\': end += 1
                 if end == n or p[end] == '\n': break
                 end += 1
-            if end >= n or p[end] != '"': cc_error(cv_text("незакрытая строка"), file, cv_i(line))
+            if end >= n or p[end] != '"': cc_error_at(cv_text("незакрытая строка"), file, cv_i(line), ind + 1)
             let text: ptr<char> = cv_alloc(end - pos + 1)
             let len: i64 = 0
             while pos < end:
                 let ch: char = p[pos]
+                let escape_column: i64 = pos - begin + 1
                 pos += 1
                 if ch == '\\':
-                    ch = cc_escape(p[pos], file, line)
+                    ch = cc_escape(p[pos], file, line, escape_column)
                     pos += 1
-                if ch == '\0': cc_error(cv_text("строковый литерал не может содержать NUL: строки завершаются NUL"), file, cv_i(line))
+                if ch == '\0': cc_error_at(cv_text("строковый литерал не может содержать NUL: строки завершаются NUL"), file, cv_i(line), escape_column)
                 text[len] = ch
                 len += 1
             pos += 1
@@ -103,16 +106,16 @@ unsafe fn cc_lex(source: i64, file: i64) -> i64:
         if c == '\'':
             pos += 1
             let code: i64 = 0
-            if pos >= n or p[pos] == '\n': cc_error(cv_text("незакрытый симв. литерал"), file, cv_i(line))
+            if pos >= n or p[pos] == '\n': cc_error_at(cv_text("незакрытый симв. литерал"), file, cv_i(line), ind + 1)
             if p[pos] == '\\':
                 pos += 1
-                if pos >= n: cc_error(cv_text("незакрытый симв. литерал"), file, cv_i(line))
-                code = cc_escape(p[pos], file, line) as i64
+                if pos >= n or p[pos] == '\n': cc_error_at(cv_text("незакрытый симв. литерал"), file, cv_i(line), ind + 1)
+                code = cc_escape(p[pos], file, line, pos - begin) as i64
                 pos += 1
             else:
                 code = cc_utf8(p, &pos, n)
-            if p[pos] != '\'': cc_error(cv_text("незакрытый симв. литерал"), file, cv_i(line))
-            if code > 255: cc_error(cv_text("char — один байт (0..255)"), file, cv_i(line))
+            if p[pos] != '\'': cc_error_at(cv_text("незакрытый симв. литерал"), file, cv_i(line), ind + 1)
+            if code > 255: cc_error_at(cv_text("char — один байт (0..255)"), file, cv_i(line), ind + 2)
             pos += 1
             cc_lex_token(out, "char", cv_char(code), line, ind, false)
             continue
@@ -127,9 +130,9 @@ unsafe fn cc_lex(source: i64, file: i64) -> i64:
                 while p[pos] == '_' or (cv_digit(p[pos]) >= 0 and cv_digit(p[pos]) < base):
                     if p[pos] != '_': digits += 1
                     pos += 1
-                if digits == 0: cc_error(cv_text("в литерале ожидаются цифры"), file, cv_i(line))
+                if digits == 0: cc_error_at(cv_text("в литерале ожидаются цифры"), file, cv_i(line), pos - begin + 1)
                 if p[pos] == '.' and cc_lex_digit(p[pos + 1]):
-                    cc_error(cv_text("некорректное число: точка допустима только в десятичном литерале"), file, cv_i(line))
+                    cc_error_at(cv_text("некорректное число: точка допустима только в десятичном литерале"), file, cv_i(line), pos - begin + 1)
             else:
                 while cc_lex_digit(p[pos]) or p[pos] == '_': pos += 1
                 if p[pos] == '.' and cc_lex_digit(p[pos + 1]):
@@ -140,7 +143,7 @@ unsafe fn cc_lex(source: i64, file: i64) -> i64:
                     floating = true
                     pos += 1
                     if p[pos] == '+' or p[pos] == '-': pos += 1
-                    if not cc_lex_digit(p[pos]): cc_error(cv_text("в экспоненте ожидаются цифры"), file, cv_i(line))
+                    if not cc_lex_digit(p[pos]): cc_error_at(cv_text("в экспоненте ожидаются цифры"), file, cv_i(line), pos - begin + 1)
                     while cc_lex_digit(p[pos]): pos += 1
             let number: ptr<char> = cv_alloc(pos - start + 1)
             let count: i64 = 0
@@ -169,7 +172,7 @@ unsafe fn cc_lex(source: i64, file: i64) -> i64:
                 pos += size
                 matched = true
                 break
-        if not matched: cc_error(cv_cat(cv_text("неожиданный символ "), cv_repr(cv_char(c as i64))), file, cv_i(line))
+        if not matched: cc_error_at(cv_cat(cv_text("неожиданный символ "), cv_repr(cv_char(c as i64))), file, cv_i(line), ind + 1)
     return out
 
 unsafe native fn cc_prefix_bytes(text: ptr<char>, prefix: ptr<char>, size: i64) -> bool:

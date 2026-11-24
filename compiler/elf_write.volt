@@ -1,4 +1,5 @@
 use elf_imports
+use dwarf_line
 
 struct ElfLayout:
     offsets: [4]i64
@@ -184,7 +185,18 @@ unsafe fn elf_add_symbols(out: ptr<ByteBuffer>, table: ptr<ElfSections>, code: p
     bytes_free(&strings)
     bytes_free(&symbols)
 
-unsafe fn elf_executable(code: ptr<AsmObject>, libraries: i64, out: ptr<ByteBuffer>):
+unsafe fn elf_add_debug(out: ptr<ByteBuffer>, sections: ptr<ElfSections>, rows: i64, entry: i64, text: i64):
+    let start: i64 = out.len
+    dwarf_line_table(out, rows, entry, text)
+    elf_shdr(sections, ".debug_line", 1, ElfSection(0, start, out.len - start, 1, 0, 0, 0))
+    start = out.len
+    dwarf_abbrev(out)
+    elf_shdr(sections, ".debug_abbrev", 1, ElfSection(0, start, out.len - start, 1, 0, 0, 0))
+    start = out.len
+    dwarf_info(out, rows, entry, text)
+    elf_shdr(sections, ".debug_info", 1, ElfSection(0, start, out.len - start, 1, 0, 0, 0))
+
+unsafe fn elf_executable(code: ptr<AsmObject>, libraries: i64, entry: i64, out: ptr<ByteBuffer>):
     let imp: ElfImports
     let file: ElfLayout
     let tags: ByteBuffer
@@ -225,6 +237,8 @@ unsafe fn elf_executable(code: ptr<AsmObject>, libraries: i64, out: ptr<ByteBuff
         elf_data_at(out, file.rela, &rela)
         elf_data_at(out, file.dynamic, &tags)
     elf_add_symbols(out, &sections, code, &file)
+    if cv_len(code.debug_functions) != 0:
+        elf_add_debug(out, &sections, code.debug_functions, entry, ELF_BASE + file.offsets[ASM_TEXT])
     let shstr: i64 = elf_shdr(&sections, ".shstrtab", 3, ElfSection(0, out.len, sections.names.len + 10, 1, 0, 0, 0))
     cc_bytes_append(out, sections.names.data as ptr<char>, sections.names.len)
     cc_bytes_fill(out, elf_align(out.len, 8) - out.len, 0)

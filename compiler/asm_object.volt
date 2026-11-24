@@ -12,6 +12,7 @@ struct AsmObject:
     section: i64
     names: i64
     fixups: i64
+    debug_functions: i64
 
 struct AsmFixup:
     section: i64
@@ -21,6 +22,12 @@ struct AsmFixup:
     next: i64
     width: i64
     relative: bool
+
+struct AsmSourceFunction:
+    file: i64
+    line: i64
+    start: i64
+    end: i64
 
 unsafe fn asm_setup(code: ptr<AsmObject>):
     code.names = cv_dict()
@@ -86,6 +93,16 @@ unsafe fn asm_align(code: ptr<AsmObject>, n: i64):
 unsafe fn asm_label(code: ptr<AsmObject>, name: i64):
     if cv_has(code.names, name): cc_error(cv_cat(cv_text("повторная метка "), name), 0, 0)
     cv_set(code.names, name, cv_pair(cv_i(code.section), cv_i(asm_offset(code))))
+
+unsafe fn asm_source_function(code: ptr<AsmObject>, name: i64, file: i64, line: i64):
+    let location: i64 = cv_get(code.names, name, 0)
+    if file == 0 or line < 1 or location == 0 or cv_index(cv_at(location, 0)) != ASM_TEXT: return
+    let start: i64 = cv_index(cv_at(location, 1))
+    let end: i64 = code.sections[ASM_TEXT].len
+    if end <= start: return
+    let fn_range: ptr<AsmSourceFunction> = cv_alloc(sizeof(AsmSourceFunction)) as ptr<AsmSourceFunction>
+    fn_range[0] = AsmSourceFunction(file, line, start, end)
+    cv_push(code.debug_functions, fn_range as i64)
 
 unsafe fn asm_fixup(code: ptr<AsmObject>, name: i64, width: i64, relative: bool, addend: i64):
     let fix: ptr<AsmFixup> = cv_alloc(sizeof(AsmFixup)) as ptr<AsmFixup>

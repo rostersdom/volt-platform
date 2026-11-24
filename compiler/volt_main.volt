@@ -11,6 +11,7 @@ struct CCOptions:
     asm_only: bool
     quiet: bool
     run: bool
+    debug: bool
 
 unsafe fn cc_args(first: i64) -> i64:
     let out: i64 = cv_list()
@@ -67,7 +68,10 @@ unsafe fn cc_lower(state: i64, code: ptr<AsmObject>, listing: ptr<ByteBuffer>, k
         let name: i64 = cc_function_label(cv_getkey(target, "mangled_name"), cv_getkey(target, "file"))
         cc_function(emitter, code, listing, keep_listing, target, name)
     cce_emit_globals(emitter)
-    cc_function(emitter, code, listing, keep_listing, cv_getkey(state, "main_fn"), cv_text("VOLT_f_main"))
+    let startup: i64 = cv_text("VOLT_f_main")
+    cc_function(emitter, code, listing, keep_listing, cv_getkey(state, "main_fn"), startup)
+    if code != (0 as ptr<AsmObject>) and code.debug_functions != 0:
+        cc_startup_source(code, progs, startup)
     let names: i64 = x_words("rodata data bss")
     for i in 0..3:
         let name: i64 = cv_at(names, i)
@@ -82,13 +86,35 @@ unsafe fn cc_lower(state: i64, code: ptr<AsmObject>, listing: ptr<ByteBuffer>, k
         cc_bytes_append(listing, stack as ptr<char>, str_len(stack))
     cc_error_file = 0
 
+unsafe fn cc_startup_source(code: ptr<AsmObject>, progs: i64, label: i64):
+    # Anchor startup to the first entry-file statement, not to a synthetic line 1.
+    # The wrapper starts before any implicit module initialization calls.
+    for i in 0..cv_len(progs):
+        let prog: i64 = cv_at(progs, i)
+        if not cv_truth(cv_getkey(prog, "is_entry")): continue
+        let statements: i64 = cv_getkey(prog, "main")
+        for j in 0..cv_len(statements):
+            let stmt: i64 = cv_at(statements, j)
+            if cv_classes(stmt, "ConstStmt"): continue
+            asm_source_function(code, label, cv_getkey(prog, "file"), cv_index(cv_getkey(stmt, "line")))
+            break
+        return
+
 unsafe fn cc_function(emitter: i64, code: ptr<AsmObject>, listing: ptr<ByteBuffer>, keep_listing: bool, target: i64, name: i64):
     if code != (0 as ptr<AsmObject>): code.section = ASM_TEXT
     cv_field(emitter, "text", cv_list())
+    let file: i64 = cv_getkey(target, "file")
+    let line: i64 = cv_index(cv_getkey(target, "line"))
+    cc_error_file = file
+    cc_error_line = line
     cce_emit_fn(emitter, target, name)
-    cc_error_file = cv_getkey(target, "file")
-    cc_error_line = cv_index(cv_getkey(target, "line"))
     cc_lines(listing, code, cv_getkey(emitter, "text"), keep_listing)
+    # VOLT_f_main is a generated startup wrapper, not an explicit source function.
+    if code != (0 as ptr<AsmObject>) and code.debug_functions != 0 and not cv_name(name, "VOLT_f_main"):
+        let label: i64 = name
+        if label == 0: label = cc_function_label(cv_getkey(target, "name"), file)
+        asm_source_function(code, label, file, line)
+    cc_error_file = 0
 
 unsafe fn cc_dump(node: i64, depth: i64):
     let kind: i64 = cv_kind(node)
@@ -147,10 +173,11 @@ unsafe fn cc_build(opts: ptr<CCOptions>) -> i64:
     let libraries: i64 = elf_libraries(links)
     let obj: AsmObject
     asm_setup(&obj)
+    if opts.debug: obj.debug_functions = cv_list()
     cc_lower(state, &obj, &listing, opts.listing != 0)
     cc_runtime(&obj)
     let output: ByteBuffer
-    elf_executable(&obj, libraries, &output)
+    elf_executable(&obj, libraries, entry, &output)
     if opts.listing != 0: cc_write_file(opts.listing, listing.data as ptr<char>, listing.len, 420)
     if opts.output != 0:
         cc_write_file(opts.output, output.data as ptr<char>, output.len, 493)
@@ -211,7 +238,7 @@ unsafe fn cc_cli() -> i64:
     let args: i64 = cc_args(1)
     let n: i64 = cv_len(args)
     if n == 0:
-        print("VOLT для Linux x86-64: volt FILE.volt [-o FILE] [--run] [--emit-asm] [--parse]")
+        print("VOLT для Linux x86-64: volt FILE.volt [-o FILE] [-g] [--run] [--emit-asm] [--parse]")
         return 0
     if cv_name(cv_at(args, 0), "--launch"):
         cc_find_root()
@@ -228,9 +255,10 @@ unsafe fn cc_cli() -> i64:
             print("VOLT Language v0.3.0")
             return 0
         if cv_name(arg, "--help") or cv_name(arg, "-h"):
-            print("VOLT для Linux x86-64: volt FILE.volt [-o FILE] [--run] [--emit-asm] [--parse]")
+            print("VOLT для Linux x86-64: volt FILE.volt [-o FILE] [-g] [--run] [--emit-asm] [--parse]")
             return 0
         if cv_name(arg, "--run"): opts.run = true
+        elif cv_name(arg, "-g"): opts.debug = true
         elif cv_name(arg, "--quiet"): opts.quiet = true
         elif cv_name(arg, "--emit-asm"): opts.asm_only = true
         elif cv_name(arg, "--parse"): opts.parse = true
@@ -251,6 +279,7 @@ unsafe fn cc_cli() -> i64:
         else: opts.source = arg
     if not cv_name(target, "linux-x86_64"): cc_error(cv_cat(cv_text("неподдерживаемая цель "), cv_repr(target)), 0, 0)
     if opts.source == 0: cc_error(cv_text("укажите файл .volt"), 0, 0)
+    if opts.debug and (opts.parse or opts.asm_only): cc_error(cv_text("-g требует выходной ELF"), 0, 0)
     cc_find_root()
     cc_constants()
     x_init()

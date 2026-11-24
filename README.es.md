@@ -140,6 +140,7 @@ no garantías adicionales de esta versión.
 | Comando | Resultado |
 | --- | --- |
 | `./volt prog.volt -o prog` | Genera un ejecutable ELF. `--out` equivale a `-o`. |
+| `./volt prog.volt -g -o prog` | Añade un mapa DWARF 4 de las funciones nombradas a sus líneas de declaración. |
 | `./volt prog.volt --run` | Compila y devuelve el estado del programa. Elimina el ejecutable temporal si no se indica `-o`. |
 | `./volt prog.volt --emit-asm` | Solo escribe el listado ensamblador, cuyo nombre por defecto se deriva del código fuente. |
 | `./volt prog.volt -S prog.s -o prog` | Escribe el listado ensamblador y el ejecutable. `--asm-file` equivale a `-S`. |
@@ -149,6 +150,11 @@ no garantías adicionales de esta versión.
 `--target linux-x86_64` es el único destino y el predeterminado. Sin `-o`, el
 ELF se escribe en `$TMPDIR` o `/tmp`. La construcción desde el binario inicial
 no necesita ensamblador ni enlazador externos.
+
+Los errores en archivos cargados muestran un fragmento acotado y la columna
+en bytes si se conoce. `-g` requiere salida ELF. También vincula la función de
+arranque a la primera sentencia ejecutable del archivo principal, si existe.
+No asigna direcciones a cada sentencia ni describe variables locales o tipos.
 
 ### 1. Variables, tipos y conversiones
 
@@ -272,13 +278,15 @@ por defecto, sobrecarga ni funciones anidadas. Las llamadas son por nombre. `uns
 operaciones inseguras y solo se llama desde un contexto `unsafe`.
 
 - El ABI dispone de seis registros de argumentos de clase entera (`rdi`,
-  `rsi`, `rdx`, `rcx`, `r8`, `r9`) y ocho de coma flotante (`xmm0`–`xmm7`).
-  No hay argumentos en pila. Una vista utiliza dos registros enteros. Las
-  estructuras y los valores etiquetados se pasan a funciones VOLT mediante
-  un puntero implícito y se copian al almacenamiento local. Para devolver
-  agregados se usa un puntero oculto `sret` a almacenamiento del llamador que
-  cuenta como un registro entero. El valor de retorno se conserva durante
-  `defer`. No se pueden pasar o devolver arreglos por valor ni devolver vistas.
+  `rsi`, `rdx`, `rcx`, `r8`, `r9`) y ocho de coma flotante (`xmm0`–`xmm7`),
+  asignados de forma independiente. Los argumentos que no caben en su clase
+  de registro ocupan ranuras de 8 bytes en la pila, en orden de declaración.
+  La pila se alinea a 16 bytes antes de la llamada. Una vista usa dos registros
+  enteros o se pasa entera en pila. Las estructuras y los valores etiquetados
+  se pasan a funciones VOLT por puntero implícito y se copian a almacenamiento
+  local. El puntero oculto de resultado `sret` usa el primer registro entero.
+  El resultado se conserva durante `defer`. No se pueden pasar o devolver
+  arreglos por valor ni devolver vistas.
 - **Genéricos:** una función como `fn identity<T>(value: T) -> T:` se
   especializa al compilar para cada combinación de tipos inferida. Los
   argumentos permiten deducir tipos de estructuras anidadas y de punteros.
@@ -286,19 +294,21 @@ operaciones inseguras y solo se llama desde un contexto `unsafe`.
   funciones externas y las de ensamblador no pueden ser genéricas.
 - **FFI de C:** `unsafe extern fn` declara un símbolo externo de firma fija.
   `link "-lc"` solicita una biblioteca ELF compartida. Se admiten tipos
-  escalares y punteros compatibles; los agregados se pasan por dirección, en
+  escalares y punteros compatibles. Un `enum` de VOLT usa `i64`, no la
+  representación de un `enum` de C. Los agregados se pasan por dirección, en
   memoria del llamador. No se admiten por valor arreglos, estructuras, vistas
   ni valores etiquetados en firmas externas, y tampoco llamadas variádicas
   ni la exportación automática de funciones VOLT a C.
 - **Callbacks:** `fnptr<(A, B) -> R>` o `fnptr<(A, B)>` (sin resultado) describe
-  una firma escalar de C. `callback(named_function)` permite pasar una
-  función nombrada a C desde `unsafe`; se comprueban tipos y límites de
-  registros. No se puede llamar a un valor `fnptr` desde VOLT ni capturar un
-  entorno léxico.
+  una firma escalar de C. `callback(named_function)` permite pasar una función
+  nombrada a C desde `unsafe`. Se comprueba la firma; los argumentos que no
+  caben en registros pasan en pila, igual que en llamadas directas a C.
+  No se puede llamar a un valor `fnptr` desde VOLT ni capturar un entorno léxico.
 - **Código nativo:** `native fn` admite un subconjunto de ensamblador Intel
   x86-64 y siempre es insegura. El compilador genera prólogo y epílogo, por
   lo que el cuerpo no debe tener `ret`. El cuerpo debe respetar el ABI,
-  incluida la conservación de los registros exigidos y de la pila.
+  incluida la conservación de los registros exigidos y de la pila. El primer
+  argumento en pila está en `[rbp+16]` tras el prólogo.
 
 ```volt
 native fn raw_add(a: i64, b: i64) -> i64:
@@ -419,13 +429,15 @@ Es una convención interna de VOLT, no un ABI de C.
 - **Vistas:** `data[start..end]` toma prestado `[start, end)` de un arreglo
   local. Los límites son enteros con signo y se comprueba
   `0 <= start <= end <= len(data)`. Una vista vacía es válida. `[]T` tiene
-  puntero y longitud en elementos, sin capacidad, y se alinea a 8 bytes. El
-  compilador impide escribir en la vista y bloquea de forma conservadora las
-  escrituras directas en su arreglo propietario y una segunda vista del
-  mismo arreglo en la función. No hay un analizador general
-  de préstamos ni de vidas útiles. No se admiten vistas mutables, vistas de
-  vistas, conversión implícita desde arreglos, retornos, almacenamiento en
-  agregados o globales ni ABI de C para vistas.
+  puntero y longitud en elementos, sin capacidad, y se alinea a 8 bytes. Se
+  permiten varias vistas de solo lectura, incluso superpuestas, y la lectura
+  del arreglo. No se puede escribir a través de la vista ni directamente en el
+  arreglo prestado hasta que termine el bloque, incluidas sus acciones `defer`.
+  No se admite copiar una vista con `let` ni reasignarla, crear vistas mutables
+  o a partir de otra vista, convertir arreglos de forma implícita, devolver
+  vistas, guardarlas en agregados o globales ni pasarlas por el ABI de C. No hay análisis del último
+  uso ni comprobación de la vida útil de punteros sin procesar. Obtener una
+  dirección de la vista requiere `unsafe`.
 - **Punteros:** `&place` obtiene una dirección. Desreferenciar, indexar,
   acceder a campos a través del puntero, hacer aritmética o convertir punteros
   requiere `unsafe`. `p + i`, `i + p` y `p - i` avanzan en unidades de
@@ -488,9 +500,12 @@ protocolo completo de inicio y terminación de libc.
 | Entorno Linux | `read`, `write`, `write_all`, `open`, `close`, `mmap`, `munmap` y `brk` son operaciones de bajo nivel; el llamador verifica punteros, tamaños y estados. |
 | `io`, `str` | `print` separa valores con espacios y añade un salto de línea; `put_*`, `put_err`, `put_errnl` y `nl` dan control explícito. Los enteros usan decimal y los flotantes normalmente seis cifras fraccionarias, con notación científica para valores grandes. Un error de escritura provoca `panic`. Las cadenas ofrecen `str_len`, `str_eq`, `str_concat` y `str_repeat`. |
 | [`math`](vstd/math.volt), [`math3d`](vstd/math3d.volt) | Constantes y operaciones numéricas, como `powi`, `ipowi` y `hypot`, vectores y matrices. Las potencias enteras y factoriales se comprueban; `ipowi` con exponente negativo trunca el recíproco hacia cero. |
-| [`time`](vstd/time.volt), [`fs`](vstd/fs.volt) | `monotonic_ms() -> Result<i64, i32>` mide intervalos, no fechas. `file_size(path) -> Result<i64, i32>` obtiene con `statx` el tamaño lógico, incluso en archivos dispersos. Los `errno` de `Err` son positivos. |
+| [`time`](vstd/time.volt) | `monotonic_ms() -> Result<i64, i32>` mide intervalos, no fechas. |
+| [`fs`](vstd/fs.volt) | `file_size` devuelve el tamaño lógico, incluidos los huecos de archivos dispersos. `create_dir` crea un directorio, `rename_path` mueve una entrada sin reemplazar el destino y `remove_file`/`remove_dir` eliminan un archivo o enlace simbólico y un directorio vacío, respectivamente. Operaciones síncronas de Linux con `errno` positivo en `Err`. |
 | [`process`](vstd/process.volt) | `argc`, `arg_at` y el entorno sin procesar leen la pila inicial de Linux. `arg_at` devuelve una cadena prestada o `Err(22)`; `process_exec_wait` ejecuta sin shell. |
 | [`event`](vstd/event.volt) | `poll` consulta descriptores y escribe `revents` en el arreglo que respalda la vista, por lo que es `unsafe`. `poll_readable` devuelve flags de un descriptor. El tiempo límite son milisegundos de `i32` (`-1`: espera indefinida, `0`: consulta inmediata). `poll` devuelve 0 si vence el plazo. `timer_create`, `timer_set`, `timer_read` y `timer_close` operan con `timerfd` monotónico no bloqueante; `first_ms = 0` lo desactiva y sin expiraciones se devuelve `Err(11)`. |
+| Flujos de [`event`](vstd/event.volt) | `stream_pair` abre dos extremos de un socket local no bloqueante; se cierran con `event_close`. `try_read` y `try_write` intentan una operación en un socket de flujo conectado. Gestiona transferencias parciales y `EAGAIN` con `poll`. La lectura devuelve cero al final; la escritura no emite `SIGPIPE`. |
+| [`thread`](vstd/thread.volt) | Pthreads opcionales en Linux x86-64 con glibc ≥ 2.34. `thread_spawn`/`thread_join` y las operaciones `mutex_init`, `mutex_lock`, `mutex_unlock`, `mutex_destroy` son `unsafe`. Conserva las direcciones de las estructuras y los datos vivos hasta un `join` exitoso, y sincroniza explícitamente los accesos. El compilador no analiza la seguridad entre hilos. |
 | [`bytes`](vstd/bytes.volt), [`buffer`](vstd/buffer.volt), [`bytevec`](vstd/bytevec.volt), [`utf8`](vstd/utf8.volt) | Almacenamiento con longitud, descriptores comprobados y utilidades UTF-8. `utf8_next` consume un byte inválido y devuelve U+FFFD. |
 | [`json`](docs/json.md) | Lee un documento JSON UTF-8 de hasta 8 MiB con 64 contenedores anidados. Busca campos y elementos y conserva rangos numéricos exactos. `JsonValue` toma prestado el origen sin modificar. Decodifica y escapa cadenas en búferes del llamador, sin serializador general de objetos o arreglos. |
 | [`http`, `dns`, `tls`](docs/http.md) | GET HTTP acotado por IPv4, resolución de nombres y HTTPS con OpenSSL 3 que comprueba el certificado y el nombre. No es una API general de sockets ni de ejecución asíncrona. |

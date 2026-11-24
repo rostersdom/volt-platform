@@ -34,23 +34,14 @@ unsafe fn ccs_new(v_progs: i64, v_entry_name: i64) -> i64:
     return v_self
 
 unsafe fn ccs_callback_type(v_self: i64, v_params: i64, v_result: i64, v_file: i64, v_line: i64) -> i64:
-    let v_float_count: i64 = 0
-    let collect_1: i64 = cv_vector(CV_LIST)
-    let seq_3: i64 = v_params
-    for index_2 in 0..cv_len(seq_3):
-        let t_4: i64 = cv_at(seq_3, index_2)
-        cv_push(collect_1, cc_compatible(t_4))
-    if (not (cv_truth(cv_all(collect_1))) or ((not (v_result == 0)) and not (cv_truth(cc_compatible(v_result))))):
+    # A VOLT enum uses its i64 representation, not the layout of a C enum.
+    for i in 0..cv_len(v_params):
+        let typ: i64 = cv_at(v_params, i)
+        if not cv_truth(cc_compatible(typ)) and not cv_classes(typ, "TEnum"):
+            cc_error(cv_text("callback поддерживает только скалярный ABI C"), v_file, v_line)
+            return 0
+    if v_result != 0 and not cv_truth(cc_compatible(v_result)) and not cv_classes(v_result, "TEnum"):
         cc_error(cv_text("callback поддерживает только скалярный ABI C"), v_file, v_line)
-        return 0
-    let collect_5: i64 = cv_vector(CV_LIST)
-    let seq_7: i64 = v_params
-    for index_6 in 0..cv_len(seq_7):
-        let t_8: i64 = cv_at(seq_7, index_6)
-        cv_push(collect_5, cc_is_float(t_8))
-    v_float_count = cv_sum(collect_5)
-    if ((cv_less(51, cv_sub(cv_length(v_params), v_float_count))) or (cv_less(67, v_float_count))):
-        cc_error(cv_text("callback превышает лимит регистров ABI C"), v_file, v_line)
         return 0
     return cc_TFnPtr(v_params, v_result)
 
@@ -187,6 +178,9 @@ unsafe fn ccs_resolve_type(v_self: i64, v_t: i64, v_indirect: i64) -> i64:
         return cc_TSlice(v_elem, cv_bool((cv_equal(cv_getkey(v_t, "kind"), cv_text("slice_mut")))))
     if (cv_equal(cv_getkey(v_t, "kind"), cv_text("array"))):
         v_elem = ccs_resolve_type(v_self, cv_subscript(cv_getkey(v_t, "a"), 3), v_indirect)
+        if cv_classes(v_elem, "TSlice"):
+            cc_error(cv_text("slice нельзя хранить в массиве"), v_file, cv_getkey(v_t, "line"))
+            return 0
         if cv_truth(cc_contains_wrapper_type(v_elem)):
             cc_error(cv_text("Option/Result нельзя помещать в массив"), v_file, cv_getkey(v_t, "line"))
             return 0
@@ -705,8 +699,6 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
 unsafe fn ccs_check_fn_abi(v_self: i64, v_fn: i64) -> i64:
     let v_params: i64 = 0
     let v_foreign: i64 = 0
-    let v_ints: i64 = 0
-    let v_msg: i64 = 0
     let collect_1: i64 = cv_vector(CV_LIST)
     let seq_3: i64 = cv_getkey(v_fn, "sig_params")
     for index_2 in 0..cv_len(seq_3):
@@ -736,44 +728,6 @@ unsafe fn ccs_check_fn_abi(v_self: i64, v_fn: i64) -> i64:
         logic_15 = cv_truth(cv_any(collect_11))
     if (logic_15):
         cc_error(cv_text("структуры по значению запрещены в extern/native ABI: используйте ptr"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
-        return 0
-    let collect_16: i64 = cv_vector(CV_LIST)
-    let seq_18: i64 = v_params
-    for index_17 in 0..cv_len(seq_18):
-        let t_19: i64 = cv_at(seq_18, index_17)
-        if not (not (cv_truth(cc_is_float(t_19)))): continue
-        let choice_20: i64 = 0
-        if cv_classes(t_19, "TSlice"):
-            choice_20 = 19
-        else:
-            choice_20 = 11
-        cv_push(collect_16, choice_20)
-    v_ints = cv_sum(collect_16)
-    let kindof_21: i64 = cv_getkey(v_fn, "sig_ret")
-    if cv_classes(kindof_21, "TWrapper") or cv_classes(kindof_21, "TStruct"):
-        v_ints = cv_add(v_ints, 11)
-    if (cv_less(cv_length(cc_k_int_arg_regs), v_ints)):
-        let choice_22: i64 = 0
-        if cv_truth(v_foreign):
-            choice_22 = cv_text("больше 6 целых аргументов не поддерживается")
-        else:
-            choice_22 = cv_text("больше 6 целых ABI-аргументов (включая hidden sret)")
-        v_msg = choice_22
-        cc_error(v_msg, cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
-        return 0
-    let collect_23: i64 = cv_vector(CV_LIST)
-    let seq_25: i64 = v_params
-    for index_24 in 0..cv_len(seq_25):
-        let t_26: i64 = cv_at(seq_25, index_24)
-        cv_push(collect_23, cc_is_float(t_26))
-    if (cv_less(67, cv_sum(collect_23))):
-        let choice_27: i64 = 0
-        if cv_truth(v_foreign):
-            choice_27 = cv_text("больше 8 float-аргументов не поддерживается")
-        else:
-            choice_27 = cv_text("больше 8 float ABI-аргументов")
-        v_msg = choice_27
-        cc_error(v_msg, cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
         return 0
     let logic_34: bool = not (cv_truth(cv_getkey(v_fn, "is_unsafe")))
     if logic_34:
@@ -1449,7 +1403,6 @@ unsafe fn ccs_typecheck_fn(v_self: i64, v_fn: i64) -> i64:
     else:
         choice_13 = 3
     cv_field(v_self, "unsafe_depth", choice_13)
-    cv_field(v_self, "borrowed_slots", cv_vector(CV_SET))
     cv_field(v_self, "had_ret", CV_FALSE)
     cv_field(v_self, "had_ret_values", CV_FALSE)
     let collect_14: i64 = cv_vector(CV_SET)
@@ -1858,9 +1811,6 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
     if cv_classes(v_e, "Call"):
         return ccs_t_call(v_self, v_e)
     if cv_classes(v_e, "Index"):
-        if (cv_classes(cv_getkey(v_e, "base"), "VarRef") and (cv_contains(cv_getkey(v_self, "borrowed_slots"), cv_get(cv_getkey(v_e, "base"), cv_text("slot"), 0))) and cv_truth(cc_is_array(cv_getkey(ccs_find_slot(v_self, cv_getkey(cv_getkey(v_e, "base"), "name")), "typ")))):
-            cc_error(cv_text("нельзя обращаться к массиву, пока slice ссылается на него"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
-            return 0
         v_bt = ccs_tf(v_self, cv_getkey(v_e, "base"), 0)
         v_it = ccs_tf(v_self, cv_getkey(v_e, "idx"), 0)
         if (not (cv_truth(cc_is_int(v_it))) or cv_classes(v_it, "TEnum")):
@@ -1900,9 +1850,6 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
         if (not (cv_classes(cv_getkey(v_e, "base"), "VarRef")) or (cv_get(cv_getkey(v_e, "base"), cv_text("slot"), 0) == 0)):
             cc_error(cv_text("slice пока разрешён только от локального массива"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
             return 0
-        if (cv_contains(cv_getkey(v_self, "borrowed_slots"), cv_getkey(cv_getkey(v_e, "base"), "slot"))):
-            cc_error(cv_text("array уже заимствован активным slice"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
-            return 0
         let unpack_27: i64 = cv_pair(ccs_tf(v_self, cv_getkey(v_e, "start"), 0), ccs_tf(v_self, cv_getkey(v_e, "end"), 0))
         v_st = cv_at(unpack_27, 0)
         v_et = cv_at(unpack_27, 1)
@@ -1911,6 +1858,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
             return 0
         cv_field(v_e, "slice_type", cc_TSlice(cv_getkey(v_bt, "elem"), cv_getkey(v_e, "mutable")))
         cv_field(v_e, "owner_slot", cv_getkey(cv_getkey(v_e, "base"), "slot"))
+        # shortcut: even temporary slices reserve the owner until block exit, pending expression lifetimes.
         cv_add_set(cv_getkey(v_self, "borrowed_slots"), cv_getkey(v_e, "owner_slot"))
         return cv_getkey(v_e, "slice_type")
     if cv_classes(v_e, "Member"):
@@ -1992,6 +1940,9 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
     if cv_classes(v_e, "AddrOf"):
         v_t = ccs_tf(v_self, cv_getkey(v_e, "x"), 0)
         ccs_want_lvalue_node(v_self, cv_getkey(v_e, "x"), v_t)
+        let v_place: i64 = ccs_borrow_base(cv_getkey(v_e, "x"))
+        if cv_classes(cv_getkey(v_place, "type"), "TSlice"):
+            ccs_require_unsafe(v_self, v_e, cv_text("взятие raw-адреса slice"))
         return cc_TPtr(v_t)
     if cv_classes(v_e, "ArrayLit"):
         cc_error(cv_text("список массивов нельзя вычислять как значение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
@@ -2580,6 +2531,8 @@ unsafe fn ccs_typecheck_stmts(v_self: i64, v_stmts: i64) -> i64:
     let v_flag_name: i64 = 0
     let v_name: i64 = 0
     let v_sid: i64 = 0
+    let v_borrows: i64 = cv_getkey(v_self, "borrowed_slots")
+    let v_borrow_count: i64 = cv_len(v_borrows)
     cv_push(cv_getkey(v_self, "scope"), cv_dict())
     cv_push(cv_getkey(v_self, "const_scope"), cv_dict())
     let items_1: i64 = cv_vector(CV_LIST)
@@ -2599,6 +2552,14 @@ unsafe fn ccs_typecheck_stmts(v_self: i64, v_stmts: i64) -> i64:
         if cv_classes(v_st, "LetStmt") or cv_classes(v_st, "ConstStmt"):
             cv_remove(cv_getkey(v_self, "future_local_names"), cv_getkey(v_st, "name"))
         ccs_typecheck_st(v_self, v_st)
+    # Deferred writes also see loans introduced after their registration.
+    for i in 0..cv_len(v_frame):
+        let v_action: i64 = cv_getkey(cv_at(v_frame, i), "action")
+        if cv_classes(v_action, "AssignStmt"):
+            ccs_check_lvalue(v_self, cv_getkey(v_action, "target"))
+    # The set only appends newly borrowed slots; ancestor loans stay active.
+    while cv_len(v_borrows) > v_borrow_count:
+        cv_pop(v_borrows)
     cv_pop(cv_getkey(v_self, "defer_stack"))
     cv_pop(cv_getkey(v_self, "const_scope"))
     cv_pop(cv_getkey(v_self, "scope"))
@@ -2646,7 +2607,7 @@ unsafe fn ccs_const_lookup(v_self: i64, v_name: i64) -> i64:
     return 0
 
 unsafe fn ccs_typecheck_defer_action(v_self: i64, v_st: i64) -> i64:
-    if cv_classes(v_st, "DeferStmt") or cv_classes(v_st, "ReturnStmt") or cv_classes(v_st, "BreakStmt") or cv_classes(v_st, "ContinueStmt") or cv_classes(v_st, "IfStmt") or cv_classes(v_st, "WhileStmt") or cv_classes(v_st, "ForStmt") or cv_classes(v_st, "UnsafeStmt") or cv_classes(v_st, "LetStmt") or cv_classes(v_st, "ConstStmt"):
+    if not (cv_classes(v_st, "AssignStmt") or cv_classes(v_st, "ExprStmt")):
         cc_error(cv_text("defer допускает только простой оператор без flow-control или вложенного defer"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
         return 0
     ccs_typecheck_st(v_self, v_st)
@@ -2669,6 +2630,11 @@ unsafe fn cc_check_expr(v_self: i64, v_defer: i64, v_expr: i64) -> i64:
     let v_arg: i64 = 0
     let v_item: i64 = 0
     if (v_expr == 0):
+        return 0
+    if cv_classes(v_expr, "SliceExpr"):
+        cc_check_expr(v_self, v_defer, cv_getkey(v_expr, "base"))
+        cc_check_expr(v_self, v_defer, cv_getkey(v_expr, "start"))
+        cc_check_expr(v_self, v_defer, cv_getkey(v_expr, "end"))
         return 0
     if cv_classes(v_expr, "VarRef"):
         if (cv_contains(cv_getkey(v_self, "future_local_names"), cv_getkey(v_expr, "name"))):
@@ -2758,8 +2724,6 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
     let v_at: i64 = 0
     let v_want_t: i64 = 0
     let v_expected: i64 = 0
-    let v_owner: i64 = 0
-    let v_target_slot: i64 = 0
     let v_tg: i64 = 0
     let v_rt: i64 = 0
     let v_slot: i64 = 0
@@ -2975,6 +2939,9 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                         cc_error(cv_text("пустой массив не имеет разрешённого типа"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
                         return 0
                     v_elem = ccs_tf(v_self, cv_subscript(v_items, 3), 0)
+                    if cv_classes(v_elem, "TSlice"):
+                        cc_error(cv_text("slice нельзя хранить в массиве"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        return 0
                     let seq_45: i64 = cv_slice(v_items, 11, 0)
                     for index_44 in 0..cv_len(seq_45):
                         v_it = cv_at(seq_45, index_44)
@@ -3028,6 +2995,9 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                         return 0
                     v_init_t = v_want_t
                 v_typ = v_init_t
+                if cv_classes(v_typ, "TSlice") and not cv_classes(cv_getkey(v_st, "init"), "SliceExpr"):
+                    cc_error(cv_text("копирование slice через let пока не поддерживается; нужен диапазон локального массива"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                    return 0
         let choice_53: i64 = cv_bool((cv_getkey(v_st, "init") == 0))
         if not cv_truth(choice_53):
             let items_55: i64 = cv_vector(CV_TUPLE)
@@ -3058,19 +3028,8 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
         if not (cv_classes(cv_getkey(v_st, "target"), "VarRef")):
             ccs_tf(v_self, cv_getkey(v_st, "target"), 0)
         v_expected = cv_getkey(cv_getkey(v_st, "target"), "type")
-        if (cv_classes(cv_getkey(v_st, "target"), "Index") and cv_classes(cv_getkey(cv_getkey(cv_getkey(v_st, "target"), "base"), "type"), "TArray")):
-            v_owner = cv_get(cv_getkey(cv_getkey(v_st, "target"), "base"), cv_text("slot"), 0)
-            if (cv_contains(cv_getkey(v_self, "borrowed_slots"), v_owner)):
-                cc_error(cv_text("нельзя менять массив, пока slice ссылается на него"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
-                return 0
-        let choice_57: i64 = 0
-        if cv_classes(cv_getkey(v_st, "target"), "VarRef"):
-            choice_57 = cv_get(cv_getkey(v_st, "target"), cv_text("slot"), 0)
-        else:
-            choice_57 = 0
-        v_target_slot = choice_57
-        if (cv_classes(v_expected, "TArray") and (cv_contains(cv_getkey(v_self, "borrowed_slots"), v_target_slot))):
-            cc_error(cv_text("нельзя менять массив, пока slice ссылается на него"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+        if cv_classes(v_expected, "TSlice"):
+            cc_error(cv_text("присваивание slice запрещено; создайте новый срез через let"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
             return 0
         let logic_59: bool = cv_classes(v_expected, "TWrapper") and cv_classes(cv_getkey(v_st, "value"), "Call")
         if logic_59:
@@ -3380,6 +3339,11 @@ unsafe fn cc_precheck_expr(v_self: i64, v_expr: i64) -> i64:
     let v_child: i64 = 0
     if (v_expr == 0):
         return 0
+    if cv_classes(v_expr, "SliceExpr"):
+        cc_precheck_expr(v_self, cv_getkey(v_expr, "base"))
+        cc_precheck_expr(v_self, cv_getkey(v_expr, "start"))
+        cc_precheck_expr(v_self, cv_getkey(v_expr, "end"))
+        return 0
     if (cv_classes(v_expr, "VarRef") and (cv_contains(cv_getkey(v_self, "future_local_names"), cv_getkey(v_expr, "name")))):
         let pieces_1: i64 = cv_list()
         cv_push(pieces_1, cv_text("defer использует локальную переменную "))
@@ -3416,13 +3380,28 @@ unsafe fn cc_precheck_expr(v_self: i64, v_expr: i64) -> i64:
                                 cc_precheck_expr(v_self, v_child)
     return 0
 
+unsafe fn ccs_borrow_base(v_e: i64) -> i64:
+    # Follow only projections that address the same storage, not raw pointers.
+    while cv_classes(v_e, "Member") or cv_classes(v_e, "Index"):
+        let v_base: i64 = cv_getkey(v_e, "base")
+        let v_typ: i64 = cv_getkey(v_base, "type")
+        if cv_classes(v_e, "Member") and cv_classes(v_typ, "TStruct"):
+            v_e = v_base
+        elif cv_classes(v_e, "Index") and (cv_classes(v_typ, "TArray") or cv_classes(v_typ, "TSlice")):
+            v_e = v_base
+        else:
+            break
+    return v_e
+
 unsafe fn ccs_check_lvalue(v_self: i64, v_e: i64) -> i64:
-    let v_t: i64 = 0
+    let v_place: i64 = ccs_borrow_base(v_e)
+    if cv_classes(cv_getkey(v_place, "type"), "TSlice"):
+        cc_error(cv_text("неизменяемый slice нельзя изменять"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        return 0
+    if cv_classes(v_place, "VarRef") and cv_contains(cv_getkey(v_self, "borrowed_slots"), cv_getkey(v_place, "slot")):
+        cc_error(cv_text("нельзя менять массив, пока slice ссылается на него"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        return 0
     let v_bt: i64 = 0
-    let v_owner: i64 = 0
-    let v_s: i64 = 0
-    let v_nm: i64 = 0
-    v_t = cv_get(v_e, cv_text("type"), 0)
     if cv_classes(v_e, "Member"):
         if cv_has(v_e, cv_text("enum_value")):
             cc_error(cv_text("вариант enum нельзя изменить"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
@@ -3433,29 +3412,11 @@ unsafe fn ccs_check_lvalue(v_self: i64, v_e: i64) -> i64:
         cc_error(cv_text("нельзя присвоить это поле"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
         return 0
     if cv_classes(v_e, "Index"):
-        if cv_truth(cc_is_array(cv_getkey(cv_getkey(v_e, "base"), "type"))):
-            v_owner = cv_get(cv_getkey(v_e, "base"), cv_text("slot"), 0)
-            if (cv_contains(cv_getkey(v_self, "borrowed_slots"), v_owner)):
-                cc_error(cv_text("нельзя менять массив, пока slice ссылается на него"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
-                return 0
         if cv_truth(cc_is_string(cv_getkey(cv_getkey(v_e, "base"), "type"))):
             cc_error(cv_text("string неизменяем; изменяйте копию в массиве байтов"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
             return 0
-        if (cv_classes(cv_getkey(cv_getkey(v_e, "base"), "type"), "TSlice") and not (cv_truth(cv_getkey(cv_getkey(cv_getkey(v_e, "base"), "type"), "mutable")))):
-            cc_error(cv_text("неизменяемый slice нельзя изменять"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
-            return 0
         return 0
-    if cv_classes(v_e, "VarRef"):
-        v_s = cv_get(v_e, cv_text("slot"), 0)
-        if ((not (v_s == 0)) and (cv_contains(cv_getkey(v_self, "borrowed_slots"), v_s))):
-            cc_error(cv_text("нельзя менять массив, пока slice ссылается на него"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
-            return 0
-        if (v_s == 0):
-            v_nm = cv_getkey(v_e, "name")
-            if (cv_contains(cv_getkey(v_self, "globals"), v_nm)):
-                return 0
-        return 0
-    if cv_classes(v_e, "Deref"):
+    if cv_classes(v_e, "VarRef") or cv_classes(v_e, "Deref"):
         return 0
     cc_error(cv_text("слева от '=' нельзя ставить это выражение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
     return 0
@@ -3510,7 +3471,6 @@ unsafe fn ccs_check_main(v_self: i64, v_entry_prog: i64) -> i64:
     cv_field(v_self, "had_ret", CV_FALSE)
     cv_field(v_self, "had_ret_values", CV_FALSE)
     cv_field(v_self, "fn", v_mf)
-    cv_field(v_self, "borrowed_slots", cv_vector(CV_SET))
     ccs_typecheck_stmts(v_self, cv_getkey(v_mf, "body"))
     cv_field(v_mf, "slots", cv_getkey(v_self, "slots"))
     cv_field(v_mf, "ret_type", cc_int(CV_TRUE, 515))

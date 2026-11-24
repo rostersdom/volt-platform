@@ -2,16 +2,46 @@
 
 use io
 
-let str_arena_ptr: ptr<char> = 0 as ptr<char>
-let str_arena_used: i64 = 0
-let str_arena_size: i64 = 0
+const STR_ARENA_BYTES: i64 = 1048576
+
+struct StrArena:
+    data: ptr<char>
+    used: i64
+
+unsafe native fn str_arena_state() -> ptr<StrArena>:
+{
+    .lcomm VOLT_str_arena_state, 16
+    lea rax, [rip + VOLT_str_arena_state]
+}
+
+# Allocation reserves a disjoint range; copying happens outside the lock.
+unsafe native fn str_arena_lock():
+{
+    .lcomm VOLT_str_arena_guard, 4
+.Lstr_arena_retry:
+    mov eax, 1
+    xchg dword ptr [rip + VOLT_str_arena_guard], eax
+    test eax, eax
+    jz .Lstr_arena_acquired
+    pause
+    jmp .Lstr_arena_retry
+.Lstr_arena_acquired:
+}
+
+unsafe native fn str_arena_unlock():
+{
+    mov dword ptr [rip + VOLT_str_arena_guard], 0
+}
 
 unsafe fn str_arena_new(need: i64) -> ptr<char>:
-    if need < 0 or str_arena_used < 0 or str_arena_used > str_arena_size or need >= str_arena_size - str_arena_used:
+    str_arena_lock()
+    defer str_arena_unlock()
+    let arena: ptr<StrArena> = str_arena_state()
+    if arena.data == (0 as ptr<char>) or need < 0 or need >= STR_ARENA_BYTES - arena.used:
         put_errnl("volt: arena full")
         panic("arena")
-    let q: ptr<char> = str_arena_ptr + str_arena_used
-    str_arena_used = str_arena_used + need + 1
+    let q: ptr<char> = arena.data + arena.used
+    arena.used += need + 1
     return q
 
 fn str_len(s: string) -> i64:
@@ -86,16 +116,15 @@ fn str_repeat(s: string, n: i64) -> string:
 
 # Allocate the process-wide arena once, before user module initializers.
 fn str_arena_init():
-    let p: ptr<char>
-    let map_status: i64
     unsafe:
-        p = mmap(1048576)
-        map_status = p as i64
-    if map_status < 0:
-        put_errnl("volt: mmap failed")
-        panic("mmap")
-    str_arena_ptr = p
-    str_arena_size = 1048576
-    str_arena_used = 0
+        str_arena_lock()
+        defer str_arena_unlock()
+        let arena: ptr<StrArena> = str_arena_state()
+        if arena.data != (0 as ptr<char>): return
+        let p: ptr<char> = mmap(STR_ARENA_BYTES)
+        if p as i64 < 0:
+            put_errnl("volt: mmap failed")
+            panic("mmap")
+        arena.data = p
 
 str_arena_init()

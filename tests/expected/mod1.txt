@@ -1,1 +1,3 @@
 !!stderr: mod1.volt:9: ошибка: неизвестное имя 'banner'
+  |     put_str(banner)
+  = колонка неизвестна
