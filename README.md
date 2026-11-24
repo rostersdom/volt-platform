@@ -256,8 +256,9 @@ execution reaches it. Operations on exit from that block run last-in,
 first-out on fallthrough, `return`, `break`, `continue`, or a propagated `?`.
 Only scopes being exited are cleaned up. Locals used by `defer` must already
 be declared, and are read when the deferred code runs. The return value is
-saved before cleanup. `defer` does not accept declarations, nested `defer`, or
-control flow; `panic` and `exit` terminate the process without unwinding it.
+saved before cleanup. A deferred operation cannot contain declarations, nested
+`defer`, or control flow, including postfix `?`. `panic` and `exit` terminate
+the process without unwinding it.
 
 ```volt
 fn total() -> i64:
@@ -306,7 +307,11 @@ in its body and can only be called in an unsafe context.
    describes a supported scalar C signature. In `unsafe`, pass
    `callback(named_function)` to C. The compiler checks the signature; excess
    scalar arguments use stack slots just as in direct C calls.
-   VOLT cannot call a `fnptr` value directly or capture a lexical environment.
+   A local variable or parameter of this type can be called as `f(args)` in
+   `unsafe`. The types and argument count are checked. A null target exits
+   before argument evaluation; direct names retain priority. Casting a raw
+   address is unsafe and does not validate the external signature or lifetime.
+   Callbacks do not capture a lexical environment.
 - **Native code:** `native fn` uses a supported subset of Intel x86-64
   assembly and is always unsafe. The compiler emits the prologue and epilogue;
   the body must not contain `ret`. The function must honour the calling
@@ -461,6 +466,10 @@ stable C type layout or call contract.
   underlying buffer invalidates all copies and views. The handle registry is
   limited to 64 simultaneous buffers; `get` operations return `Result` and
   invalid handles are reported rather than dereferenced.
+- **Lexical buffer reads:** [`BorrowBuffer<T>`](docs/buffer-borrow-proposal.md)
+  has checked owner handles and read-only views that end with their block.
+  Mutations and release through any owner alias are rejected while a reader is
+  active. The owner still requires explicit release; element copies are shallow.
 
 ```volt
 fn sum(values: []i64) -> i64:
@@ -496,6 +505,8 @@ procedure. `main` must have no parameters; `use process` provides `argc` and
 and `-LPATH` adds an ELF library search path at build time. The Linux dynamic
 loader resolves linked libraries at runtime. These declarations do not
 provide a full libc startup/shutdown protocol.
+An explicit [`--manifest volt.mod`](docs/volt-mod.md) adds C-library names and
+compile-time search paths. It does not download packages or run build scripts.
 
 ### 8. Standard library
 
@@ -510,7 +521,9 @@ provide a full libc startup/shutdown protocol.
 | [`process`](vstd/process.volt) | `argc`, `arg_at`, and the raw environment read the initial Linux stack. `arg_at` returns a borrowed string or `Err(22)` for an invalid index. `process_exec_wait` runs an executable without a shell. |
 | [`event`](vstd/event.volt) | `poll` checks multiple descriptors and writes `revents`; it is unsafe because it writes to the backing array of a read-only slice. `poll_readable` returns flags for one descriptor. The timeout is signed `i32` milliseconds (`-1` waits indefinitely, `0` checks without waiting). `poll` returns 0 on a timeout. Nonblocking monotonic `timerfd` supports one-shot and periodic timers via `timer_create`, `timer_set`, `timer_read`, and `timer_close`; `first_ms = 0` disarms, and a read without an expiration reports `Err(11)`. |
 | Stream I/O in [`event`](vstd/event.volt) | `stream_pair` opens two local nonblocking socket ends. Close both with `event_close`. `try_read`/`try_write` attempt a single operation on a connected stream socket; handle short counts and `EAGAIN` with `poll`. Reads return zero at EOF and writes do not raise `SIGPIPE`. |
-| [`thread`](vstd/thread.volt) | Optional pthreads on Linux x86-64 with glibc ≥ 2.34. `thread_spawn`/`thread_join` and `mutex_init`/`mutex_lock`/`mutex_unlock`/`mutex_destroy` are unsafe. Keep their slots at stable addresses, keep worker data alive until a successful join, and synchronize accesses explicitly. No compiler thread-safety checks. |
+| [`arena`](docs/arena.md) | Fixed-capacity linear allocation for temporary objects. `unsafe` callers manage the arena and must stop using all allocated pointers on reset or drop. |
+| [`thread`](docs/thread.md) | Optional pthreads on Linux x86-64 with glibc ≥ 2.34. `unsafe` thread creation and joining, mutexes with try-lock, and condition variables with monotonic deadlines. Keep slots at stable addresses and worker data alive until a successful join. No compiler thread-safety checks. |
+| [`channel`](docs/channel.md) | Synchronized, value-only `i64` messages, with blocking send/receive and `try` variants. Channel operations do not require `unsafe`; raw pthread creation and other shared state are still the caller's responsibility. |
 | [`bytes`](vstd/bytes.volt), [`buffer`](vstd/buffer.volt), [`bytevec`](vstd/bytevec.volt), [`utf8`](vstd/utf8.volt) | Counted storage, checked byte handles, and UTF-8 code-point helpers. `utf8_next` consumes one byte on invalid input and returns U+FFFD. |
 | [`json`](docs/json.md) | Read one UTF-8 JSON document (8 MiB, at most 64 nested containers); inspect fields, array elements, booleans and exact numeric spans. Decoding and quoting strings use caller-owned buffers and byte lengths. `JsonValue` borrows the unchanged input. No general object/array serializer. |
 | [`http`, `dns`, `tls`](docs/http.md) | Bounded HTTP/IPv4 GET, hostname resolution, and HTTPS through OpenSSL 3 with certificate and hostname checks. This is not a general socket or async runtime API. |

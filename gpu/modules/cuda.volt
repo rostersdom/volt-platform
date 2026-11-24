@@ -35,8 +35,7 @@ struct CudaDriver:
     launch: ptr<char>
     error_name: ptr<char>
 
-# shortcut: VOLT has no indirect fnptr calls yet; replace these two stubs
-# when it can call C function pointers with stack arguments.
+# shortcut: replace these stubs when the driver symbols are bound to typed fnptr signatures.
 # Every target here (other than launch) takes 0–3 integer-class arguments
 # and returns a 32-bit CUresult in eax. The native prologue aligns rsp.
 unsafe native fn __volt_cuda_call(entry: ptr<char>, a: u64, b: u64, c: u64) -> i64:

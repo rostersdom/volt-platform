@@ -6,8 +6,10 @@ import subprocess
 import sys
 
 SUITES = (
-    "compiler_bootstrap", "run", "regressions", "abi_integration", "compiler_lifetimes",
-    "compiler_debug", "compiler_fuzz", "vstd_io", "vstd_threads", "http_integration", "sdl_integration",
+    "compiler_bootstrap", "run", "regressions", "abi_integration", "compiler_fnptr",
+    "compiler_lifetimes", "compiler_buffer_borrow", "compiler_manifest",
+    "compiler_debug", "compiler_fuzz", "vstd_io", "vstd_arena", "vstd_threads", "vstd_channel",
+    "http_integration", "sdl_integration",
     "browser_navigation", "browser_navigation_controller", "browser_https",
     "browser_launch", "volt_launcher_integration", "browser_javascript", "browser_visual", "browser_media",
     "browser_search",

@@ -260,7 +260,8 @@ tanto por flujo normal como por `return`, `break`, `continue` o propagación
 con `?`. Solo se limpian los ámbitos que se abandonan. Las variables locales
 usadas en `defer` deben estar declaradas antes; se leen cuando se ejecuta la
 acción. El resultado de `return` se guarda antes de la limpieza. La acción
-no puede contener declaraciones, otro `defer` ni control de flujo. `panic` y
+no puede contener declaraciones, otro `defer` ni control de flujo, incluido
+el operador posfijo `?`. `panic` y
 `exit` terminan el proceso sin ejecutar los `defer` pendientes.
 
 ```volt
@@ -310,7 +311,11 @@ operaciones inseguras y solo se llama desde un contexto `unsafe`.
   una firma escalar de C. `callback(named_function)` permite pasar una función
   nombrada a C desde `unsafe`. Se comprueba la firma; los argumentos que no
   caben en registros pasan en pila, igual que en llamadas directas a C.
-  No se puede llamar a un valor `fnptr` desde VOLT ni capturar un entorno léxico.
+  En `unsafe` se puede invocar una variable local o un parámetro de este tipo
+  con `f(args)`. Se comprueban el número y el tipo de argumentos. Un destino
+  nulo termina antes de evaluarlos; los nombres directos tienen prioridad.
+  Convertir una dirección sin procesar es inseguro y no valida la firma ni el
+  tiempo de vida. Los callbacks no capturan un entorno léxico.
 - **Código nativo:** `native fn` admite un subconjunto de ensamblador Intel
   x86-64 y siempre es insegura. El compilador genera prólogo y epílogo, por
   lo que el cuerpo no debe tener `ret`. El cuerpo debe respetar el ABI,
@@ -466,6 +471,11 @@ Es una convención interna de VOLT, no un ABI de C.
   Al liberar el búfer se invalidan todas sus copias y vistas. Hay hasta 64
   búferes activos; las lecturas devuelven `Result` y detectan descriptores
   inválidos.
+- **Lecturas léxicas:** [`BorrowBuffer<T>`](docs/buffer-borrow-proposal.md)
+  usa descriptores comprobados y vistas de solo lectura hasta el fin del
+  bloque. Mientras haya lectores, ninguna copia del descriptor puede editar
+  ni liberar el búfer. El propietario se libera explícitamente; los elementos
+  se copian de forma superficial.
 
 ```volt
 fn sum(values: []i64) -> i64:
@@ -499,6 +509,9 @@ devuelve un estado y `fn main():` no devuelve valor; `main` no tiene parámetros
 `-LPATH` añade una ruta de búsqueda en la compilación. El cargador dinámico
 de Linux resuelve esas bibliotecas en ejecución. Esto no proporciona el
 protocolo completo de inicio y terminación de libc.
+El indicador explícito [`--manifest volt.mod`](docs/volt-mod.md) añade
+bibliotecas de C y rutas de búsqueda de compilación. No descarga paquetes ni
+ejecuta scripts.
 
 ### 8. Biblioteca estándar
 
@@ -513,7 +526,9 @@ protocolo completo de inicio y terminación de libc.
 | [`process`](vstd/process.volt) | `argc`, `arg_at` y el entorno sin procesar leen la pila inicial de Linux. `arg_at` devuelve una cadena prestada o `Err(22)`; `process_exec_wait` ejecuta sin shell. |
 | [`event`](vstd/event.volt) | `poll` consulta descriptores y escribe `revents` en el arreglo que respalda la vista, por lo que es `unsafe`. `poll_readable` devuelve flags de un descriptor. El tiempo límite son milisegundos de `i32` (`-1`: espera indefinida, `0`: consulta inmediata). `poll` devuelve 0 si vence el plazo. `timer_create`, `timer_set`, `timer_read` y `timer_close` operan con `timerfd` monotónico no bloqueante; `first_ms = 0` lo desactiva y sin expiraciones se devuelve `Err(11)`. |
 | Flujos de [`event`](vstd/event.volt) | `stream_pair` abre dos extremos de un socket local no bloqueante; se cierran con `event_close`. `try_read` y `try_write` intentan una operación en un socket de flujo conectado. Gestiona transferencias parciales y `EAGAIN` con `poll`. La lectura devuelve cero al final; la escritura no emite `SIGPIPE`. |
-| [`thread`](vstd/thread.volt) | Pthreads opcionales en Linux x86-64 con glibc ≥ 2.34. `thread_spawn`/`thread_join` y las operaciones `mutex_init`, `mutex_lock`, `mutex_unlock`, `mutex_destroy` son `unsafe`. Conserva las direcciones de las estructuras y los datos vivos hasta un `join` exitoso, y sincroniza explícitamente los accesos. El compilador no analiza la seguridad entre hilos. |
+| [`arena`](docs/arena.md) | Asignación lineal de capacidad fija para objetos temporales. El llamador usa `unsafe` y no puede conservar los punteros tras reiniciar o liberar la arena. |
+| [`thread`](docs/thread.md) | Pthreads opcionales en Linux x86-64 con glibc ≥ 2.34. Creación y espera de hilos con `unsafe`, mutex con intento de bloqueo y variables de condición con plazos monótonos. Conserva las direcciones y los datos vivos hasta un `join` exitoso. El compilador no analiza la seguridad entre hilos. |
+| [`channel`](docs/channel.md) | Mensajes sincronizados por valor de tipo `i64`, con operaciones bloqueantes y variantes `try`, sin `unsafe` para el canal. Crear un pthread y sincronizar el resto del estado compartido siguen siendo responsabilidad del llamador. |
 | [`bytes`](vstd/bytes.volt), [`buffer`](vstd/buffer.volt), [`bytevec`](vstd/bytevec.volt), [`utf8`](vstd/utf8.volt) | Almacenamiento con longitud, descriptores comprobados y utilidades UTF-8. `utf8_next` consume un byte inválido y devuelve U+FFFD. |
 | [`json`](docs/json.md) | Lee un documento JSON UTF-8 de hasta 8 MiB con 64 contenedores anidados. Busca campos y elementos y conserva rangos numéricos exactos. `JsonValue` toma prestado el origen sin modificar. Decodifica y escapa cadenas en búferes del llamador, sin serializador general de objetos o arreglos. |
 | [`http`, `dns`, `tls`](docs/http.md) | GET HTTP acotado por IPv4, resolución de nombres y HTTPS con OpenSSL 3 que comprueba el certificado y el nombre. No es una API general de sockets ni de ejecución asíncrona. |
