@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Run the golden, compiler regression, and integration suites."""
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+SUITES = (
+    "compiler_bootstrap", "run", "regressions", "http_integration", "sdl_integration",
+    "browser_navigation", "browser_navigation_controller", "browser_https",
+    "browser_launch", "volt_launcher_integration", "browser_javascript", "browser_visual", "browser_media",
+    "browser_search",
+)
+
+
+def main():
+    tests = Path(__file__).resolve().parent
+    build = subprocess.run(["make", "compiler"], cwd=tests.parent)
+    if build.returncode:
+        return build.returncode
+    env = {**os.environ, "SDL_VIDEODRIVER": "dummy"}
+    failures = []
+    for suite in SUITES:
+        script = suite + ".py"
+        print(f"\n=== tests/{script} ===", flush=True)
+        result = subprocess.run([sys.executable, str(tests / script)], cwd=tests.parent, env=env)
+        if result.returncode:
+            failures.append(script)
+    print(f"\n{len(SUITES) - len(failures)}/{len(SUITES)} suites passed", flush=True)
+    if failures:
+        print("Failed: " + ", ".join(failures), file=sys.stderr)
+    return int(bool(failures))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

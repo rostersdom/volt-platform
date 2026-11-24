@@ -1,0 +1,23 @@
+<!doctype html>
+<title>Интерактивная страница VOLT</title>
+<style>
+  body { color: #183047; }
+  h1 { background: #e6f3f0; margin: 8px; }
+  p { margin: 8px; }
+  button { display: block; background: #245d70; color: white; margin: 8px; }
+</style>
+<h1>JavaScript в VOLT</h1>
+<p id="message">Сценарии выключены. Откройте эту страницу с флагом --js.</p>
+<button id="count">Нажмите здесь</button>
+<script>
+var message = document.getElementById('message');
+var button = document.querySelector('#count');
+var clicks = 0;
+document.addEventListener('DOMContentLoaded', function () {
+    message.textContent = 'Сценарий запущен. Нажмите на кнопку.';
+});
+button.addEventListener('click', function () {
+    clicks += 1;
+    message.textContent = 'Число нажатий: ' + clicks;
+});
+</script>

@@ -1,0 +1,38 @@
+* { box-sizing: border-box; }
+html { background: #edf3fb; }
+body { margin: 0; color: #182440; font: 16px/1.55 system-ui, sans-serif; }
+main { max-width: 1000px; margin: 26px auto; padding: 0 22px; }
+p { margin: 0; }
+header { color: #f6f9ff; background: linear-gradient(115deg, #101c38, #254879 68%, #28746e);
+         border: 1px solid #355284; border-radius: 22px; padding: 30px;
+         box-shadow: 0 12px 24px rgba(20, 42, 78, .2); }
+.eyebrow { color: #a6e8dc; font-size: 13px; font-weight: 700; margin: 0 0 8px; }
+h1 { font-size: 36px; line-height: 1.15; margin: 0 0 10px; }
+.lead { color: #e1edff; max-width: 580px; }
+h2 { font-size: 22px; line-height: 1.2; margin: 0 0 8px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(238px, 1fr));
+         gap: 16px; margin: 22px 0; align-items: stretch; }
+article { min-height: 154px; background: #fff; border: 1px solid #d7e3f4;
+          border-radius: 16px; padding: 18px; box-shadow: 0 5px 11px #28456b18; }
+article p { color: #4b5e7d; }
+.feature { margin: 0 0 8px; color: #28528c; font-size: 13px; font-weight: 700; }
+nav { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+nav a { flex: 0 1 150px; color: #1e4883; padding: 9px; text-align: center; text-decoration: none;
+        font-weight: 600; background: #e0ecff; border: 1px solid #c2d7f7; border-radius: 11px; }
+nav a.primary { color: #fff; background: linear-gradient(110deg, #285abb, #286da9); border-color: #285abb; }
+
+.watch { display: grid; grid-template-columns: minmax(0, 2fr) minmax(170px, 1fr); gap: 16px;
+         margin: 22px 0; align-items: start; }
+.screen { padding: 12px; border-radius: 18px; background: #fff; border: 1px solid #d7e3f4;
+          box-shadow: 0 8px 18px #28456b26; }
+.screen video { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 12px; }
+.details { padding: 18px; background: #f9fbff; border: 1px solid #d7e3f4; border-radius: 16px; }
+.details p { margin: 0 0 14px; color: #4b5e7d; }
+.details p + p { margin: 0; }
+
+@media (max-width: 600px) {
+  main { margin: 16px auto; padding: 0 12px; }
+  header { padding: 20px; }
+  h1 { font-size: 28px; }
+  .watch { grid-template-columns: 1fr; }
+}

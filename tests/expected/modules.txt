@@ -1,0 +1,4 @@
+[mod] hello world
+42
+101
+true

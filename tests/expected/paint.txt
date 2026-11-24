@@ -1,0 +1,2 @@
+paint pixels ok
+default fixture pixels ok

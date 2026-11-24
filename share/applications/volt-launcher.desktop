@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=VOLT Application Launcher
+Comment=Compile and run a VOLT source file
+Exec=volt-launch %f
+Terminal=true
+NoDisplay=true
+MimeType=text/x-volt;
+Categories=Development;

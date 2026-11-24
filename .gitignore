@@ -1,0 +1,24 @@
+/volt
+/apps/bin/
+/compiler/.build/
+*.s
+__pycache__/
+*.py[cod]
+
+# Local editor, agent, and recovery files
+/.agent-teams/
+/.backup/
+/.opencode/
+/.scratch/
+/.serena/
+/.browser-source-recovery.txt
+/probe_*
+/volt-*.bin
+/tests/fixtures/controller.volt
+/tests/fixtures/controller_crash_repro.volt
+/tests/fixtures/.controller-crash-repro.volt
+/tests/fixtures/probe.volt
+/tests/precedence.expected
+
+.env
+.env.*

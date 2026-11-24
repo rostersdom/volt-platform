@@ -1,0 +1,337 @@
+{
+  "title": "Historical VOLT Language and Toolchain Review (pre-0.3.0)",
+  "review_date": "2026-11-01",
+  "report_status": "historical",
+  "language": "English",
+  "scope": [
+    "vcc.py: lexer, parser, type checker, code generator, and build driver",
+    "rt.s: Linux x86-64 runtime",
+    "vstd/io.volt, vstd/str.volt, vstd/math.volt",
+    "README.md, docs/language.md, tests/, examples/"
+  ],
+  "review_summary": "Historical snapshot of VOLT before version 0.3.0. The findings below describe that earlier tree and must not be read as current defects. The review targets Linux x86-64; it never claimed generated programs were a sandbox.",
+  "current_status": {
+    "language_version": "0.3.0",
+    "validation": {
+      "golden_suite": "12/12 passed",
+      "regression_suite": "39 passed",
+      "performance_command": "python3 benchmarks/run.py"
+    },
+    "implemented_language_safety": [
+      "Fixed-array and string indexing are bounds-checked.",
+      "Integer arithmetic, integer conversions, and float-to-integer conversions trap on overflow or invalid range.",
+      "Raw-pointer operations and raw-pointer APIs require unsafe blocks or unsafe functions.",
+      "Standard output and error helpers report write failures instead of discarding them."
+    ],
+    "remaining_limits": [
+      "Raw pointers inside unsafe code still have no runtime bounds or lifetime checks.",
+      "Safe string indexing rescans the NUL-terminated length; hot character loops should cache the length and use an unsafe raw-pointer loop.",
+      "The runtime and ABI remain Linux x86-64/System V only."
+    ]
+  },
+  "findings_status": "All entries in findings and improvement_suggestions are historical observations from the pre-0.3.0 tree.",
+  "checks": {
+    "baseline_command": "python3 tests/run.py",
+    "baseline_result": "10/10 tests passed",
+    "report_validation_command": "python3 -m json.tool review.json",
+    "report_validation_result": "passed",
+    "targeted_probes": [
+      "Confirmed source-controlled linker text executes a shell command during compilation.",
+      "Confirmed panic(\"x\") segfaults, an oversized array overwrites a prior local, and a huge string repeat segfaults.",
+      "Confirmed compound assignment evaluates an indexed target twice and module initialization observes stale dependency state.",
+      "Confirmed u64-to-f64 conversion, global float division, log2 repetition, integer printing, and exp(4.9) produce incorrect results.",
+      "Confirmed malformed indentation and duplicate struct definitions are accepted, len has broken arity handling, and uppercase RET can crash a native function."
+    ],
+    "source_changes": "No compiler, runtime, library, test, or documentation source was changed; the findings are recorded in review.json."
+  },
+  "findings": [
+    {
+      "id": "F-01",
+      "severity": "critical",
+      "category": "security",
+      "title": "Source-controlled linker text is executed by the shell",
+      "location": {"file": "vcc.py", "lines": [2772, 2781]},
+      "evidence": "The link directive is appended to a command string passed to os.system. A source directive like link \"; touch /tmp/opencode/marker; #\" created the marker during compilation.",
+      "impact": "Compiling an untrusted .volt file can execute arbitrary shell commands before the compiled program is run.",
+      "recommendation": "Never interpolate source-controlled link text into a shell command. Invoke tools with argument lists and shell=False, and either disallow link directives for untrusted builds or allowlist the supported linker options. Apply the same non-shell invocation to assembler and executable launch paths."
+    },
+    {
+      "id": "F-02",
+      "severity": "high",
+      "category": "memory_safety",
+      "title": "panic writes a fixed length from the caller's message pointer",
+      "location": {"file": "rt.s", "lines": [70, 79]},
+      "evidence": "VOLT_rt_panic uses .Lsc_len, the length of the static panic banner, as the write length for the supplied pointer. panic(\"x\") segfaulted in a targeted run.",
+      "impact": "Short messages cause an out-of-bounds read; longer messages are truncated. The syscall may expose adjacent memory or fault.",
+      "recommendation": "Compute the supplied message length before write, or ignore the parameter and write only the static banner. Add tests for empty, short, and long messages."
+    },
+    {
+      "id": "F-03",
+      "severity": "critical",
+      "category": "memory_safety",
+      "title": "An oversized array initializer writes beyond the array",
+      "location": {"file": "vcc.py", "lines": [1351, 1382]},
+      "evidence": "The declared array length is stored, but code generation loops over every initializer element without checking its count. With let canary: i64 = 777 followed by let a: [2]i64 = [1, 2, 3], the extra element overwrote canary with 3.",
+      "impact": "A simple source-level length mismatch corrupts another local and can damage the stack frame.",
+      "recommendation": "Reject an initializer whose element count exceeds the declared array length before code generation. Keep zero-fill behavior only for missing elements if that is the intended language rule."
+    },
+    {
+      "id": "F-04",
+      "severity": "critical",
+      "category": "memory_safety",
+      "title": "String repeat length overflow bypasses the arena limit",
+      "location": {"file": "vstd/str.volt", "lines": [11, 18, 43, 54]},
+      "evidence": "str_repeat calculates need = strlen(s) * n using signed i64, then str_arena_new checks a potentially overflowed sum. Repeating a two-byte string INT64_MAX times overflowed need to a negative value and segfaulted while writing before the arena.",
+      "impact": "An oversized repeat count can bypass the 1 MiB arena check and write outside the mapped buffer. mmap failure is also not checked before the pointer is used.",
+      "recommendation": "Check multiplication and addition for overflow before allocation, reject requests larger than remaining capacity, and validate mmap's return value before storing the arena pointer."
+    },
+    {
+      "id": "F-05",
+      "severity": "high",
+      "category": "correctness",
+      "title": "Compound assignment evaluates its target twice",
+      "location": {"file": "vcc.py", "lines": [2470, 2493]},
+      "evidence": "The old value is read with expr_value(tg), then the destination address is recomputed with eaddr(tg). For a[next_index()] += 5, a side-effecting next_index is called once for the read and again for the write.",
+      "impact": "The value can be read from one element and written to another; calls and other side effects in the target run twice.",
+      "recommendation": "Evaluate the lvalue address once, save it in a temporary, load the old value through that address, and store the result through the same address."
+    },
+    {
+      "id": "F-06",
+      "severity": "high",
+      "category": "correctness",
+      "title": "Module initializers run before their dependencies",
+      "location": {"file": "vcc.py", "lines": [766, 768, 995, 1017, 1497, 1502]},
+      "evidence": "Modules are retained in recursive load order (importer before dependency), and init calls follow that order. A module a importing b can therefore run before b's initializer and observe b's default global value. The auto-loaded str module is appended after user modules, so a top-level str_concat or str_repeat call in a user module can run before str_arena_init.",
+      "impact": "Initialization results depend on import traversal order and may use uninitialized module state or panic during string operations.",
+      "recommendation": "Build an explicit dependency order and initialize dependencies before dependents, including automatically loaded standard modules. Detect or define behavior for import cycles."
+    },
+    {
+      "id": "F-07",
+      "severity": "high",
+      "category": "numeric_correctness",
+      "title": "u64-to-f64 conversion uses signed conversion",
+      "location": {"file": "vcc.py", "lines": [2060, 2078, 2097, 2104, 2255, 2264]},
+      "evidence": "The conversion paths use cvtsi2sd/cvtsi2ss, which interpret the 64-bit source as signed. Casting u64 value 18446744073709551615 to f64 produced -1.0.",
+      "impact": "Values above INT64_MAX convert to negative floating-point values, including explicit casts, assignments, and float parameters.",
+      "recommendation": "Implement unsigned 64-bit integer-to-float conversion and use it consistently in casts, assignments, and call argument lowering."
+    },
+    {
+      "id": "F-08",
+      "severity": "high",
+      "category": "numeric_correctness",
+      "title": "Mixed signed/unsigned comparisons depend on operand order",
+      "location": {"file": "vcc.py", "lines": [711, 722]},
+      "evidence": "For equal-width mixed-sign integers, num_widen selects the signedness of the left operand. With a = -1 as i64 and b = 1 as u64, a < b was true while b > a was false.",
+      "impact": "Swapping operands can change the comparison domain and break basic ordering identities.",
+      "recommendation": "Define one symmetric conversion rule for mixed signedness (or reject such operations unless explicitly cast) and use it for arithmetic and comparisons."
+    },
+    {
+      "id": "F-09",
+      "severity": "high",
+      "category": "constant_evaluation",
+      "title": "Global constant folding disagrees with runtime typing and arithmetic",
+      "location": {"file": "vcc.py", "lines": [895, 919, 932, 987]},
+      "evidence": "fold_const uses integer-style truncation for division, so a global f64 initialized by 7.0 / 2.0 becomes 3.0. An explicitly typed global such as let x: i64 = true + 1 bypasses normal expression type checking and is folded to 2. Conversely, const_type accepts and/or as boolean operations but fold_const does not implement them, so true and false is rejected.",
+      "impact": "The same expression can behave differently in a local and a global initializer, and invalid or valid expressions are inconsistently accepted.",
+      "recommendation": "Type-check global expressions with the same semantic rules as function expressions, then fold according to the resolved types. Add parity tests for arithmetic, comparisons, and logical operators."
+    },
+    {
+      "id": "F-10",
+      "severity": "high",
+      "category": "numeric_correctness",
+      "title": "The log2 intrinsic leaks x87 stack entries",
+      "location": {"file": "vcc.py", "lines": [2167, 2180]},
+      "evidence": "The common path loads x before the log2 branch; that branch then loads 1 and x again. fyl2x and the final fstp remove the result but leave the first x on the x87 stack. Repeated log2(2.0) calls eventually returned invalid values.",
+      "impact": "Repeated log2 calls, and library functions built on log2 such as ln and log10, become incorrect after the x87 stack fills.",
+      "recommendation": "Use a branch-specific x87 stack setup and verify that every intrinsic leaves the x87 stack at its entry depth. Add a repeated-call test."
+    },
+    {
+      "id": "F-11",
+      "severity": "high",
+      "category": "type_safety",
+      "title": "Array element types are not checked and array-valued initializers are discarded",
+      "location": {"file": "vcc.py", "lines": [1351, 1382, 2375, 2386]},
+      "evidence": "The array literal path calls tf for each item but never compares its type with the element type. A [1]i64 initialized with a string compiled and treated the string address as an integer. For let b: [2]i64 = a, the non-list initializer is discarded and b is zero-filled.",
+      "impact": "Invalid typed programs compile, and an apparently valid array copy silently loses its source value.",
+      "recommendation": "Check every item with can_assign. Either implement array copy initialization or reject non-list array initializers with a clear diagnostic."
+    },
+    {
+      "id": "F-12",
+      "severity": "high",
+      "category": "parser_correctness",
+      "title": "A block does not require indentation beyond its header",
+      "location": {"file": "vcc.py", "lines": [366, 389]},
+      "evidence": "parse_block takes the next token's indentation as the block baseline without comparing it with the parent statement. A body aligned with its if header is accepted as a body; the following statements can be swallowed into that body instead of rejected as malformed indentation.",
+      "impact": "Invalid indentation silently changes program structure and can suppress statements.",
+      "recommendation": "Pass the header indentation to parse_block, require a strictly greater indentation for non-inline blocks, and report inconsistent indentation explicitly."
+    },
+    {
+      "id": "F-13",
+      "severity": "high",
+      "category": "native_assembly",
+      "title": "Uppercase RET bypasses the native-body check and corrupts the stack",
+      "location": {"file": "vcc.py", "lines": [321, 327, 2665, 2668]},
+      "evidence": "The parser rejects only lowercase ret/retq. The assembler accepts uppercase RET, but the compiler still appends its own epilogue. A native function ending in RET segfaulted in a targeted run because it returned before restoring its stack frame.",
+      "impact": "A case variation of a forbidden instruction makes a native function return through the wrong stack address.",
+      "recommendation": "Parse the native instruction mnemonic case-insensitively and reject all return aliases, or remove the fragile text check and validate native blocks more robustly."
+    },
+    {
+      "id": "F-14",
+      "severity": "medium",
+      "category": "lexer",
+      "title": "Integer exponent literals advance the lexer too far",
+      "location": {"file": "vcc.py", "lines": [95, 98]},
+      "evidence": "After consuming the integer prefix, the lexer advances by len(text), which includes that already-consumed prefix. The valid expression print(1e2+3) skips the plus and fails to parse; malformed 1e can also raise an uncaught Python exception because the exponent match is not checked.",
+      "impact": "Valid exponent expressions can fail, while malformed input can produce a Python traceback instead of a compiler diagnostic.",
+      "recommendation": "Advance only by the exponent suffix length and turn missing exponent digits into a VErr. Add compact and whitespace-separated exponent tests."
+    },
+    {
+      "id": "F-15",
+      "severity": "medium",
+      "category": "builtin_validation",
+      "title": "len does not enforce exactly one argument",
+      "location": {"file": "vcc.py", "lines": [1281, 1285, 2163, 2166]},
+      "evidence": "The arity condition exempts every len call. len() reaches args[0] in code generation and raises IndexError; len(a, 999) compiles and silently ignores the extra argument.",
+      "impact": "Bad source crashes the compiler or has an argument silently ignored.",
+      "recommendation": "Require exactly one argument and validate it before code generation. Ensure compiler errors are reported as VErr rather than Python exceptions."
+    },
+    {
+      "id": "F-16",
+      "severity": "medium",
+      "category": "standard_library_output",
+      "title": "print does not preserve integer signedness or wide float values",
+      "location": {"file": "vcc.py", "lines": [2502, 2520], "related_files": [{"file": "vstd/io.volt", "lines": [20, 52]}]},
+      "evidence": "emit_print sends every 8-bit integer to put_char, so i8 value -1 emits byte 0xff instead of decimal -1. u64 value 18446744073709551615 prints -1 because put_int accepts i64. put_float converts the integral part to i64, so printing 1e20 produces -9223372036854775808.000000.",
+      "impact": "The documented print operation corrupts the textual value of supported integer and floating-point types.",
+      "recommendation": "Format signed and unsigned integers according to their actual types, and format f64 without narrowing its integral part to i64. Make character output explicit: char is currently an alias of u8, so distinguishing it automatically requires a type-model change."
+    },
+    {
+      "id": "F-17",
+      "severity": "medium",
+      "category": "standard_library_math",
+      "title": "exp has much lower accuracy than its documented claim",
+      "location": {"file": "vstd/math.volt", "lines": [112, 121]},
+      "evidence": "The function sums only terms 0 through 13 of the Taylor series. exp(4.9) printed 134.212425; the reference value is 134.28977968493552, far from the comment's claimed approximately 1e-12 accuracy for |x| < 5.",
+      "impact": "Ordinary inputs produce a visible error, and the approximation becomes worse outside the stated range.",
+      "recommendation": "Use range reduction plus a bounded approximation, or clearly document and test the supported range and error bound."
+    },
+    {
+      "id": "F-18",
+      "severity": "medium",
+      "category": "standard_library_math",
+      "title": "hypot overflows while squaring finite inputs",
+      "location": {"file": "vstd/math.volt", "lines": [94, 96]},
+      "evidence": "The implementation directly evaluates sqrt(x*x + y*y), despite the comment promising no overflow. Inputs around 1e200 overflow the intermediate squares although the mathematical result is finite.",
+      "impact": "hypot returns infinity or an unusable value for large but valid finite arguments.",
+      "recommendation": "Scale by the larger absolute input before squaring, or use a standard hypot implementation if one is linked."
+    },
+    {
+      "id": "F-19",
+      "severity": "medium",
+      "category": "loop_semantics",
+      "title": "Descending range behavior depends on whether bounds are literals",
+      "location": {"file": "vcc.py", "lines": [2563, 2585]},
+      "evidence": "The compiler selects descending iteration only when both bounds are integer literals. for i in 3..0 iterated 3, 2, 1, while equivalent variable bounds produced an empty loop. The language reference describes ranges as [a, b).",
+      "impact": "Replacing a literal with a variable changes the loop's behavior.",
+      "recommendation": "Implement the documented ascending half-open rule (i < stop) for all bound expressions. If descending ranges are intended as an extension, document and test that rule independently of AST shape."
+    },
+    {
+      "id": "F-20",
+      "severity": "medium",
+      "category": "semantic_validation",
+      "title": "Duplicate struct definitions are silently ignored",
+      "location": {"file": "vcc.py", "lines": [861, 871]},
+      "evidence": "The duplicate check only raises when the existing entry is not a StructDef, but the first pass stores StructDef values. Two definitions named X therefore compile and the first definition wins; a constructor matching the second definition can be checked against the wrong fields.",
+      "impact": "A declaration error is hidden and later code may use an unintended struct layout.",
+      "recommendation": "Raise on every repeated struct name, while allowing only explicitly supported forward declarations. Add a duplicate-definition test."
+    },
+    {
+      "id": "F-21",
+      "severity": "medium",
+      "category": "struct_calls",
+      "title": "A struct constructor is accepted as an argument but cannot be lowered",
+      "location": {"file": "vcc.py", "lines": [1764, 1767, 2085, 2097]},
+      "evidence": "The type checker accepts take(Point(7)) as a struct-valued argument, but call_gen asks eaddr for the constructor expression and code generation reports that a struct constructor is not addressable.",
+      "impact": "A type-correct expression fails late in code generation instead of compiling or receiving an early semantic error.",
+      "recommendation": "Materialize constructor arguments into temporary storage before passing them, or reject them during type checking with a precise diagnostic."
+    },
+    {
+      "id": "F-22",
+      "severity": "medium",
+      "category": "io_reliability",
+      "title": "Standard output and error helpers ignore partial writes",
+      "location": {"file": "rt.s", "lines": [17, 21], "related_files": [{"file": "vstd/io.volt", "lines": [11, 62]}]},
+      "evidence": "put_str, put_int, put_err, and put_errnl issue single write syscalls and ignore the returned count. Linux write may write fewer bytes than requested or return EINTR, especially for large output or pipes.",
+      "impact": "Long stdout/stderr strings and numeric buffers can be truncated without an error being reported.",
+      "recommendation": "Add a write_all loop that advances by the returned count, handles EINTR, and reports other errors. Use it for standard output and error helpers."
+    },
+    {
+      "id": "F-23",
+      "severity": "medium",
+      "category": "build_reliability",
+      "title": "Concurrent compiler runs share temporary build artifacts",
+      "location": {"file": "vcc.py", "lines": [2759, 2781]},
+      "evidence": "The CLI uses a process-specific assembly path but every build still overwrites /tmp/opencode/volt_rt.o. The compile_src default also reuses volt_build.s, its object file, and volt_build.bin, so concurrent calls through that API collide across build artifacts.",
+      "impact": "Parallel builds can overwrite an object while another linker is reading it, causing flaky build failures or corrupted outputs.",
+      "recommendation": "Create a unique temporary build directory per compilation and keep all generated assembly, object, and executable files inside it."
+    },
+    {
+      "id": "F-24",
+      "severity": "medium",
+      "category": "test_infrastructure",
+      "title": "The test runner can hang indefinitely and update mode can bless failures",
+      "location": {"file": "tests/run.py", "lines": [25, 36]},
+      "evidence": "Each test subprocess has no timeout. With --update, the runner writes captured output even when compilation or execution returned nonzero.",
+      "impact": "A looping regression hangs the suite; an accidental --update can replace a good golden file with an error result.",
+      "recommendation": "Set a per-test timeout, handle TimeoutExpired, and refuse to update golden output when compilation or execution fails unless an explicit force option is used."
+    },
+    {
+      "id": "F-25",
+      "severity": "medium",
+      "category": "type_layout",
+      "title": "By-value recursive structs are accepted with an invalid layout",
+      "location": {"file": "vcc.py", "lines": [844, 858]},
+      "evidence": "resolve_struct registers an unfinished TStruct before resolving fields. A direct field of the same struct sees size zero during layout, so struct Node { next: Node } compiles instead of being rejected as infinitely recursive.",
+      "impact": "The declared field has no valid finite storage layout; member access and copies do not represent the declared type.",
+      "recommendation": "Track structs currently being resolved and reject by-value recursion. Continue to allow recursion through ptr<Node>."
+    }
+  ],
+  "improvement_suggestions": [
+    {
+      "priority": "medium",
+      "area": "compiler diagnostics and tests",
+      "recommendation": "Add negative tests for malformed syntax, duplicate definitions, type mismatches, bad builtin arity, invalid native assembly, and ABI limits. Assert a concise compiler diagnostic rather than a Python traceback."
+    },
+    {
+      "priority": "medium",
+      "area": "memory safety",
+      "recommendation": "Array bounds checks are explicitly absent. Consider an optional checked build mode for indexing and pointer arithmetic, with tests for empty, first, and one-past-end indices."
+    },
+    {
+      "priority": "medium",
+      "area": "ELF hardening",
+      "recommendation": "Generated binaries currently have no PT_GNU_STACK program header. Emit a .note.GNU-stack marker in generated and runtime assembly, then verify the resulting stack policy on supported Linux toolchains."
+    },
+    {
+      "priority": "low",
+      "area": "standard library performance",
+      "recommendation": "powi and ipowi use one multiplication per exponent step. Exponentiation by squaring reduces large exponents from O(n) to O(log n), with explicit handling for INT64_MIN and negative exponents."
+    },
+    {
+      "priority": "low",
+      "area": "language documentation",
+      "recommendation": "Clarify whether module-level let values are mutable after constant initialization; the compiler permits functions to assign them although the reference calls them constants. Document the 1 MiB string arena limit and panic behavior as well."
+    },
+    {
+      "priority": "low",
+      "area": "maintenance",
+      "recommendation": "Remove unused helpers and state such as str_escape, the unused local p in str_arena_new, BUILTIN_VA, IRMAP, and the no-op loop assignment in typecheck_fn. Keep refactoring separate from correctness fixes."
+    }
+  ],
+  "not_checked": [
+    "Git history and a change diff are unavailable because this directory is not a Git repository.",
+    "The snake example was inspected but not interactively tested in a real terminal.",
+    "The report does not claim compatibility with non-Linux or non-x86-64 targets; those are documented as unsupported."
+  ],
+  "verdict": "Historical verdict for the pre-0.3.0 tree. VOLT 0.3.0 now checks safe arrays, strings, integer arithmetic, and numeric conversions; raw pointers remain explicitly unsafe and are not sandboxed."
+}
