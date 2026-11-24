@@ -30,6 +30,7 @@ unsafe fn ccs_new(v_progs: i64, v_entry_name: i64) -> i64:
     cv_field(v_self, "_string", cc_k_string_type)
     cv_field(v_self, "unsafe_depth", 3)
     cv_field(v_self, "borrowed_slots", cv_vector(CV_SET))
+    cv_field(v_self, "buffer_borrow_file", cc_path_join(cc_std, cv_text("borrow_buffer.volt")))
     cv_field(v_self, "lbl_prefix", cv_text("VOLT_L"))
     return v_self
 
@@ -66,6 +67,9 @@ unsafe fn ccs_resolve_type(v_self: i64, v_t: i64, v_indirect: i64) -> i64:
     v_file = cv_get(v_t, cv_text("file"), 0)
     if (cv_equal(cv_getkey(v_t, "kind"), cv_text("name"))):
         v_n = cv_subscript(cv_getkey(v_t, "a"), 3)
+        # The module must not compile with a compiler that lacks its lifetime checks.
+        if cv_name(v_n, "__VoltBorrowScopeV2") and cv_equal(v_file, cv_getkey(v_self, "buffer_borrow_file")):
+            return cc_int(CV_TRUE, cv_i(8))
         if (cv_contains(cv_getkey(v_self, "type_vars"), v_n)):
             v_typ = cv_subscript(cv_getkey(v_self, "type_vars"), v_n)
             if not (cv_truth(v_indirect)):
@@ -193,6 +197,64 @@ unsafe fn cc_allowed_payload(v_x: i64) -> i64:
         return cv_bool(not (cv_truth(cc_contains_wrapper_type(cv_getkey(v_x, "elem")))))
     return cv_bool(cv_classes(v_x, "TInt") or cv_classes(v_x, "TFloat") or cv_classes(v_x, "TBool") or cv_classes(v_x, "TString") or cv_classes(v_x, "TEnum"))
 
+unsafe fn ccs_buffer_module_def(v_self: i64, v_table: string, v_name: i64) -> bool:
+    let v_def: i64 = cv_get(cv_getkey(v_self, v_table), v_name, 0)
+    return v_def != 0 and cv_equal(cv_getkey(v_def, "file"), cv_getkey(v_self, "buffer_borrow_file"))
+
+unsafe fn ccs_buffer_module_body(v_self: i64) -> bool:
+    return cv_equal(cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_self, "buffer_borrow_file"))
+
+unsafe fn ccs_buffer_type(v_self: i64, v_type: i64, v_name: string) -> bool:
+    return cv_classes(v_type, "TStruct") and cv_name(cv_getkey(v_type, "name"), v_name) and ccs_buffer_module_def(v_self, "struct_defs", cv_text(v_name))
+
+unsafe fn ccs_contains_buffer_owner(v_self: i64, v_type: i64) -> bool:
+    let v_defs: i64 = cv_getkey(v_self, "struct_defs")
+    let v_pending: i64 = cv_list()
+    let v_seen: i64 = cv_vector(CV_SET)
+    cv_push(v_pending, cv_pair(v_type, 0))
+    while cv_len(v_pending) > 0:
+        let v_entry: i64 = cv_pop(v_pending)
+        let v_item: i64 = cv_at(v_entry, 0)
+        let v_vars: i64 = cv_at(v_entry, 1)
+        let v_record: i64 = 0
+        let v_parts: i64 = 0
+        if cv_classes(v_item, "TExpr"):
+            v_parts = cv_getkey(v_item, "a")
+            let v_kind: i64 = cv_getkey(v_item, "kind")
+            if cv_name(v_kind, "struct_type") or (cv_name(v_kind, "name") and not cv_contains(v_vars, cv_at(v_parts, 0))):
+                v_record = cv_at(v_parts, 0)
+        elif cv_classes(v_item, "TStruct") or cv_classes(v_item, "TWrapper"):
+            if cv_classes(v_item, "TStruct"): v_record = cv_getkey(v_item, "name")
+            v_parts = cv_getkey(v_item, "args")
+        elif cv_classes(v_item, "TArray") or cv_classes(v_item, "TSlice") or cv_classes(v_item, "TPtr"):
+            cv_push(v_pending, cv_pair(cv_getkey(v_item, "elem"), v_vars))
+        elif cv_classes(v_item, "TFnPtr"):
+            v_parts = cv_getkey(v_item, "params")
+            cv_push(v_pending, cv_pair(cv_getkey(v_item, "result"), v_vars))
+        elif cv_classes(v_item, "tuple") or cv_classes(v_item, "list"):
+            v_parts = v_item
+        for i in 0..cv_len(v_parts): cv_push(v_pending, cv_pair(cv_at(v_parts, i), v_vars))
+        if v_record == 0 or cv_has(v_seen, v_record): continue
+        if cv_name(v_record, "BorrowBuffer"): return true
+        cv_add_set(v_seen, v_record)
+        # Pointer targets need not have a layout; inspect each declaration once instead.
+        let v_def: i64 = cv_get(v_defs, v_record, 0)
+        let v_fields: i64 = cv_getkey(v_def, "fields")
+        for i in 0..cv_len(v_fields):
+            cv_push(v_pending, cv_pair(cv_at(cv_at(v_fields, i), 1), cv_getkey(v_def, "type_params")))
+    return false
+
+unsafe fn ccs_check_buffer_cast(v_self: i64, v_a: i64, v_b: i64, v_e: i64):
+    if not (cv_classes(v_a, "TPtr") or cv_classes(v_b, "TPtr")) or ccs_buffer_module_body(v_self): return
+    if cv_equal(v_a, v_b) or not ccs_buffer_module_def(v_self, "struct_defs", cv_text("BorrowBuffer")): return
+    # A literal null does not retype a live handle or its storage.
+    if cv_classes(v_b, "TPtr") and cv_classes(v_e, "IntLit") and cv_equal(cv_getkey(v_e, "val"), cv_i(0)): return
+    if ccs_contains_buffer_owner(v_self, v_a) or ccs_contains_buffer_owner(v_self, v_b):
+        cc_error(cv_text("представление BorrowBuffer нельзя приводить через raw-указатель"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+
+unsafe fn ccs_buffer_view_type_error(v_file: i64, v_line: i64):
+    cc_error(cv_text("BufferRead разрешён только как локальное заимствование через let"), v_file, v_line)
+
 unsafe fn ccs_struct_type(v_self: i64, v_name: i64, v_args: i64, v_file: i64, v_line: i64, v_indirect: i64) -> i64:
     let v_sd: i64 = 0
     let v_key: i64 = 0
@@ -200,6 +262,9 @@ unsafe fn ccs_struct_type(v_self: i64, v_name: i64, v_args: i64, v_file: i64, v_
     v_sd = cv_get(cv_getkey(v_self, "struct_defs"), v_name, 0)
     if (v_sd == 0):
         cc_error(cv_cat(cv_text("неизвестная структура "), cv_format(v_name, "")), v_file, v_line)
+        return 0
+    if cv_name(v_name, "BufferRead") and ccs_buffer_module_def(v_self, "struct_defs", v_name) and not cv_equal(v_file, cv_getkey(v_self, "buffer_borrow_file")):
+        ccs_buffer_view_type_error(v_file, v_line)
         return 0
     if (not (cv_equal(cv_length(v_args), cv_length(cv_getkey(v_sd, "type_params"))))):
         let pieces_1: i64 = cv_list()
@@ -1506,12 +1571,19 @@ unsafe fn ccs_always_return(v_self: i64, v_stmts: i64) -> i64:
     return CV_FALSE
 
 unsafe fn ccs_tf(v_self: i64, v_e: i64, v_expected: i64) -> i64:
-    let v_t: i64 = 0
     if (cv_truth(cc_is_struct(v_expected)) and cv_classes(v_e, "Call") and (cv_equal(cv_getkey(v_e, "name"), cv_getkey(v_expected, "name")))):
         cv_field(v_e, "context_type", v_expected)
-    let tmp_1: i64 = ccs_typeof(v_self, v_e)
-    v_t = tmp_1
-    cv_field(v_e, "type", tmp_1)
+    if cv_classes(v_e, "Call"): ccs_buffer_check_call(v_self, v_e)
+    let v_t: i64 = ccs_typeof(v_self, v_e)
+    if cv_classes(v_e, "Cast"):
+        let v_x: i64 = cv_getkey(v_e, "x")
+        ccs_check_buffer_cast(v_self, cv_getkey(v_x, "type"), v_t, v_x)
+    if ccs_buffer_type(v_self, v_t, "BufferRead") and not ccs_buffer_module_body(v_self):
+        let v_scoped_arg: bool = cv_truth(cv_getkey(v_e, "buffer_read_argument")) and cv_truth(cv_getkey(cv_getkey(v_e, "slot"), "buffer_read_loan"))
+        if not cv_truth(cv_getkey(v_e, "buffer_read_generated")) and not v_scoped_arg:
+            cc_error(cv_text("BufferRead нельзя копировать или передавать за пределы операций чтения"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            return 0
+    cv_field(v_e, "type", v_t)
     return v_t
 
 unsafe fn ccs_require_unsafe(v_self: i64, v_e: i64, v_operation: i64) -> i64:
@@ -1892,6 +1964,9 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
         else:
             v_st = v_bt
             cv_field(v_e, "tptr", CV_FALSE)
+        if ccs_buffer_type(v_self, v_st, "BorrowBuffer") and not ccs_buffer_module_body(v_self):
+            cc_error(cv_text("BorrowBuffer: поле дескриптора недоступно"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            return 0
         ccs_ensure_layout(v_self, v_st)
         let seq_31: i64 = cv_getkey(v_st, "fields")
         for index_30 in 0..cv_len(seq_31):
@@ -2560,7 +2635,69 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
     cc_error(cv_cat(cv_text("неизвестная функция "), cv_format(v_name, "r")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
     return 0
 
+unsafe fn ccs_buffer_function(v_self: i64, v_name: i64) -> bool:
+    # Constructors take precedence over functions in the ordinary call resolver.
+    return not cv_has(cv_getkey(v_self, "struct_defs"), v_name) and ccs_buffer_module_def(v_self, "generic_fns", v_name)
+
+unsafe fn ccs_buffer_check_call(v_self: i64, v_e: i64):
+    let v_name: i64 = cv_getkey(v_e, "name")
+    if cv_name(v_name, "BorrowBuffer") or cv_name(v_name, "BufferRead"):
+        if ccs_buffer_module_def(v_self, "struct_defs", v_name) and not ccs_buffer_module_body(v_self):
+            let v_file: i64 = cv_getkey(cv_getkey(v_self, "fn"), "file")
+            let v_line: i64 = cv_getkey(v_e, "line")
+            if cv_name(v_name, "BufferRead"):
+                ccs_buffer_view_type_error(v_file, v_line)
+            else:
+                cc_error(cv_text("BorrowBuffer: создавайте дескриптор через borrow_buffer_new"), v_file, v_line)
+        return
+    let v_acquire: bool = cv_name(v_name, "borrow_buffer_read")
+    let v_release: bool = cv_name(v_name, "__volt_buffer_read_end")
+    if not (v_acquire or v_release or cv_name(v_name, "buffer_read_len") or cv_name(v_name, "buffer_read_get")): return
+    if not ccs_buffer_function(v_self, v_name): return
+    if (v_acquire or v_release) and not cv_truth(cv_getkey(v_e, "buffer_read_generated")):
+        let v_file: i64 = cv_getkey(cv_getkey(v_self, "fn"), "file")
+        let v_line: i64 = cv_getkey(v_e, "line")
+        if v_acquire: cc_error(cv_text("borrow_buffer_read требует отдельного let"), v_file, v_line)
+        if v_release: cc_error(cv_text("завершение заимствования автоматическое"), v_file, v_line)
+    let v_args: i64 = cv_getkey(v_e, "args")
+    if v_acquire or cv_len(v_args) == 0: return
+    let v_arg: i64 = cv_at(v_args, 0)
+    if cv_classes(v_arg, "VarRef"): cv_field(v_arg, "buffer_read_argument", CV_TRUE)
+
+unsafe fn ccs_buffer_read_defers(v_self: i64, v_stmts: i64):
+    if not ccs_buffer_function(v_self, cv_text("borrow_buffer_read")): return
+    let v_expanded: i64 = 0
+    for i in 0..cv_len(v_stmts):
+        let v_st: i64 = cv_at(v_stmts, i)
+        let v_init: i64 = cv_getkey(v_st, "init")
+        if cv_classes(v_st, "LetStmt") and cv_classes(v_init, "Call") and cv_name(cv_getkey(v_init, "name"), "borrow_buffer_read"):
+            let v_file: i64 = cv_getkey(cv_getkey(v_self, "fn"), "file")
+            let v_line: i64 = cv_getkey(v_st, "line")
+            let v_args: i64 = cv_getkey(v_init, "args")
+            if cv_len(v_args) != 1 or not cv_classes(cv_at(v_args, 0), "VarRef"):
+                cc_error(cv_text("borrow_buffer_read ожидает имя владельца"), v_file, v_line)
+                return
+            let v_end: i64 = cv_text("__volt_buffer_read_end")
+            if not ccs_buffer_function(v_self, v_end):
+                cc_error(cv_text("недоступно завершение заимствования BorrowBuffer"), v_file, v_line)
+                return
+            if v_expanded == 0: v_expanded = cv_slice(v_stmts, cv_i(0), cv_i(i))
+            # Register in this block immediately after acquisition, before later user defers.
+            cv_field(v_init, "buffer_read_generated", CV_TRUE)
+            let v_cleanup_args: i64 = cv_list()
+            cv_push(v_cleanup_args, cc_VarRef(cv_getkey(v_st, "name"), v_line))
+            let v_cleanup: i64 = cc_Call(v_end, v_cleanup_args, v_line)
+            cv_field(v_cleanup, "buffer_read_generated", CV_TRUE)
+            cv_push(v_expanded, v_st)
+            cv_push(v_expanded, cc_DeferStmt(cc_ExprStmt(v_cleanup, v_line), v_line))
+        elif v_expanded != 0:
+            cv_push(v_expanded, v_st)
+    if v_expanded != 0:
+        while cv_len(v_stmts) > 0: cv_pop(v_stmts)
+        cv_extend(v_stmts, v_expanded)
+
 unsafe fn ccs_typecheck_stmts(v_self: i64, v_stmts: i64) -> i64:
+    ccs_buffer_read_defers(v_self, v_stmts)
     let v_frame: i64 = 0
     let v_old_future: i64 = 0
     let v_st: i64 = 0
@@ -3051,8 +3188,10 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
             if cv_truth(choice_54):
                 choice_54 = cv_bool(not (cv_classes(v_typ, "TPtr")))
             choice_53 = choice_54
-        ccs_declare(v_self, cv_getkey(v_st, "name"), v_typ, choice_53, cv_getkey(v_st, "line"), cv_text("local"))
-        cv_field(v_st, "slot", cv_subscript(cv_subscript(cv_getkey(v_self, "scope"), cv_neg(11)), cv_getkey(v_st, "name")))
+        let v_sid: i64 = ccs_declare(v_self, cv_getkey(v_st, "name"), v_typ, choice_53, cv_getkey(v_st, "line"), cv_text("local"))
+        cv_field(v_st, "slot", v_sid)
+        if cv_truth(cv_getkey(cv_getkey(v_st, "init"), "buffer_read_generated")):
+            cv_field(cv_subscript(cv_getkey(v_self, "slots"), v_sid), "buffer_read_loan", CV_TRUE)
         return 0
     if cv_classes(v_st, "AssignStmt"):
         if cv_classes(cv_getkey(v_st, "target"), "VarRef"):
@@ -3254,6 +3393,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                     if cv_classes(v_vt, "TWrapper"):
                         cc_error(cv_text("Option/Result return требует сигнатуру с тем же wrapper-типом"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
                         return 0
+                    ccs_check_buffer_cast(v_self, v_vt, cv_getkey(cv_getkey(v_self, "fn"), "sig_ret"), cv_getkey(v_st, "value"))
                     ccs_chk_cast(v_self, v_vt, cv_getkey(cv_getkey(v_self, "fn"), "sig_ret"), v_st, CV_FALSE)
         else:
             if (not (cv_getkey(cv_getkey(v_self, "fn"), "sig_ret") == 0)):
@@ -3377,6 +3517,10 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
 unsafe fn cc_precheck_expr(v_self: i64, v_expr: i64) -> i64:
     let v_child: i64 = 0
     if (v_expr == 0):
+        return 0
+    # A propagating defer would enter block cleanup again while it is being emitted.
+    if cv_classes(v_expr, "Unary") and cv_name(cv_getkey(v_expr, "op"), "?"):
+        cc_error(cv_text("постфиксный ? нельзя использовать в defer"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_expr, "line"))
         return 0
     if cv_classes(v_expr, "SliceExpr"):
         cc_precheck_expr(v_self, cv_getkey(v_expr, "base"))
