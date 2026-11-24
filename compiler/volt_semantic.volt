@@ -253,7 +253,7 @@ unsafe fn ccs_check_buffer_cast(v_self: i64, v_a: i64, v_b: i64, v_e: i64):
         cc_error(cv_text("представление BorrowBuffer нельзя приводить через raw-указатель"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
 
 unsafe fn ccs_buffer_view_type_error(v_file: i64, v_line: i64):
-    cc_error(cv_text("BufferRead разрешён только как локальное заимствование через let"), v_file, v_line)
+    cc_error(cv_text("BufferRead разрешён только как локальное заимствование через let без явной аннотации типа"), v_file, v_line)
 
 unsafe fn ccs_struct_type(v_self: i64, v_name: i64, v_args: i64, v_file: i64, v_line: i64, v_indirect: i64) -> i64:
     let v_sd: i64 = 0
@@ -1361,7 +1361,6 @@ unsafe fn ccs_setup_fn(v_self: i64, v_fn: i64) -> i64:
     cv_field(v_self, "const_scope", items_4)
     let items_5: i64 = cv_vector(CV_LIST)
     cv_field(v_self, "defer_stack", items_5)
-    cv_field(v_self, "defer_names", cv_vector(CV_SET))
     cv_field(v_self, "future_local_names", cv_vector(CV_SET))
     cv_field(v_self, "defer_name_counter", 3)
     let items_6: i64 = cv_vector(CV_LIST)
@@ -2702,8 +2701,6 @@ unsafe fn ccs_typecheck_stmts(v_self: i64, v_stmts: i64) -> i64:
     let v_old_future: i64 = 0
     let v_st: i64 = 0
     let v_flag_name: i64 = 0
-    let v_name: i64 = 0
-    let v_sid: i64 = 0
     let v_borrows: i64 = cv_getkey(v_self, "borrowed_slots")
     let v_borrow_count: i64 = cv_len(v_borrows)
     cv_push(cv_getkey(v_self, "scope"), cv_dict())
@@ -2734,8 +2731,6 @@ unsafe fn ccs_typecheck_stmts(v_self: i64, v_stmts: i64) -> i64:
     while cv_len(v_borrows) > v_borrow_count:
         cv_pop(v_borrows)
     cv_pop(cv_getkey(v_self, "defer_stack"))
-    cv_pop(cv_getkey(v_self, "const_scope"))
-    cv_pop(cv_getkey(v_self, "scope"))
     cv_field(v_self, "future_local_names", v_old_future)
     let seq_9: i64 = v_stmts
     for index_8 in 0..cv_len(seq_9):
@@ -2744,26 +2739,10 @@ unsafe fn ccs_typecheck_stmts(v_self: i64, v_stmts: i64) -> i64:
             v_flag_name = cv_add(cv_text("$defer"), cv_str(cv_getkey(v_self, "defer_name_counter")))
             cv_field(v_self, "defer_name_counter", cv_add(cv_getkey(v_self, "defer_name_counter"), 11))
             cv_field(v_st, "flag_slot", ccs_declare(v_self, v_flag_name, cc_int(CV_FALSE, 515), CV_TRUE, cv_getkey(v_st, "line"), cv_text("defer")))
-            cv_add_set(cv_getkey(v_self, "defer_names"), v_flag_name)
             cv_field(v_self, "defer_serial", cv_add(cv_getkey(v_self, "defer_serial"), 11))
-    let seq_11: i64 = v_stmts
-    for index_10 in 0..cv_len(seq_11):
-        v_st = cv_at(seq_11, index_10)
-        if cv_classes(v_st, "LetStmt"):
-            cv_remove(cv_subscript(cv_getkey(v_self, "scope"), cv_neg(11)), cv_getkey(v_st, "name"))
-        else:
-            if cv_classes(v_st, "ConstStmt"):
-                cv_remove(cv_subscript(cv_getkey(v_self, "const_scope"), cv_neg(11)), cv_getkey(v_st, "name"))
-            else:
-                if cv_classes(v_st, "DeferStmt"):
-                    let seq_13: i64 = cv_aslist(cv_items(cv_subscript(cv_getkey(v_self, "scope"), cv_neg(11))))
-                    for index_12 in 0..cv_len(seq_13):
-                        let unpack_14: i64 = cv_at(seq_13, index_12)
-                        v_name = cv_at(unpack_14, 0)
-                        v_sid = cv_at(unpack_14, 1)
-                        if (cv_equal(v_sid, cv_getkey(v_st, "flag_slot"))):
-                            cv_remove(cv_subscript(cv_getkey(v_self, "scope"), cv_neg(11)), v_name)
-                    cv_remove(cv_getkey(v_self, "defer_names"), cv_getkey(cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_st, "flag_slot")), "name"))
+    # Drop only this block's names, including its hidden defer flags.
+    cv_pop(cv_getkey(v_self, "const_scope"))
+    cv_pop(cv_getkey(v_self, "scope"))
     let seq_16: i64 = v_stmts
     for index_15 in 0..cv_len(seq_16):
         v_st = cv_at(seq_16, index_15)
@@ -2813,7 +2792,7 @@ unsafe fn cc_check_expr(v_self: i64, v_defer: i64, v_expr: i64) -> i64:
         v_slot_id = cv_get(v_expr, cv_text("slot"), 0)
         # A resolved local is already bound to its visible slot, even if a
         # later declaration has the same name.
-        if v_slot_id == 0 and cv_contains(cv_getkey(v_self, "future_local_names"), cv_getkey(v_expr, "name")):
+        if v_slot_id == 0 and not cv_has(v_expr, cv_text("const_binding")) and cv_contains(cv_getkey(v_self, "future_local_names"), cv_getkey(v_expr, "name")):
             let pieces_1: i64 = cv_list()
             cv_push(pieces_1, cv_text("defer использует локальную переменную "))
             cv_push(pieces_1, cv_format(cv_getkey(v_expr, "name"), ""))
@@ -2982,7 +2961,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
         cv_push(cv_subscript(cv_getkey(v_self, "defer_stack"), cv_neg(11)), v_st)
         return 0
     if cv_classes(v_st, "ConstStmt"):
-        if ((cv_contains(cv_subscript(cv_getkey(v_self, "scope"), cv_neg(11)), cv_getkey(v_st, "name"))) or (cv_contains(cv_subscript(cv_getkey(v_self, "const_scope"), cv_neg(11)), cv_getkey(v_st, "name"))) or (cv_contains(cv_getkey(v_self, "fn_param_names"), cv_getkey(v_st, "name"))) or (cv_contains(cv_getkey(v_self, "defer_names"), cv_getkey(v_st, "name")))):
+        if ((cv_contains(cv_subscript(cv_getkey(v_self, "scope"), cv_neg(11)), cv_getkey(v_st, "name"))) or (cv_contains(cv_subscript(cv_getkey(v_self, "const_scope"), cv_neg(11)), cv_getkey(v_st, "name"))) or (cv_contains(cv_getkey(v_self, "fn_param_names"), cv_getkey(v_st, "name")))):
             let pieces_33: i64 = cv_list()
             cv_push(pieces_33, cv_text("имя "))
             cv_push(pieces_33, cv_format(cv_getkey(v_st, "name"), ""))
@@ -3527,12 +3506,11 @@ unsafe fn cc_precheck_expr(v_self: i64, v_expr: i64) -> i64:
         cc_precheck_expr(v_self, cv_getkey(v_expr, "start"))
         cc_precheck_expr(v_self, cv_getkey(v_expr, "end"))
         return 0
-    if (cv_classes(v_expr, "VarRef") and (cv_contains(cv_getkey(v_self, "future_local_names"), cv_getkey(v_expr, "name")))):
-        let pieces_1: i64 = cv_list()
-        cv_push(pieces_1, cv_text("defer использует локальную переменную "))
-        cv_push(pieces_1, cv_format(cv_getkey(v_expr, "name"), ""))
-        cv_push(pieces_1, cv_text(", объявленную после defer"))
-        cc_error(cv_join(cv_text(""), pieces_1), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_expr, "line"))
+    if cv_classes(v_expr, "VarRef"):
+        let name: i64 = cv_getkey(v_expr, "name")
+        if cv_contains(cv_getkey(v_self, "future_local_names"), name) and ccs_find_slot(v_self, name) == 0 and ccs_const_lookup(v_self, name) == 0:
+            cc_error(cv_cat(cv_cat(cv_text("defer использует локальную переменную "), name), cv_text(", объявленную после defer")),
+                     cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_expr, "line"))
         return 0
     if cv_classes(v_expr, "Unary") or cv_classes(v_expr, "Deref") or cv_classes(v_expr, "AddrOf") or cv_classes(v_expr, "Cast"):
         cc_precheck_expr(v_self, cv_getkey(v_expr, "x"))

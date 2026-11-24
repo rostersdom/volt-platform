@@ -117,6 +117,35 @@ if true:
 print(borrow_buffer_drop(owner))
 ''', "1 42 -16\n2 42 -16\n42 -16\n0\n")
 
+    def test_defer_reads_the_visible_view_and_constant_before_shadowing(self):
+        self.assert_runs('''let values = [11, 22]
+let outer = borrow_buffer_new(values[0..1])
+let inner = borrow_buffer_new(values[1..2])
+let view = borrow_buffer_read(outer)
+if true:
+    const label: i64 = 7
+    if true:
+        defer print(label, buffer_read_get(view, 0))
+        const label: i64 = 8
+        let view = borrow_buffer_read(inner)
+        print(label, buffer_read_get(view, 0))
+''', "8 22\n7 11\n")
+
+    def test_unsafe_block_does_not_remove_outer_view_or_constant(self):
+        self.assert_runs('''let values = [11, 22]
+let outer = borrow_buffer_new(values[0..1])
+let inner = borrow_buffer_new(values[1..2])
+if true:
+    let view = borrow_buffer_read(outer)
+    const label: i64 = 7
+    unsafe:
+        let view = borrow_buffer_read(inner)
+        const label: i64 = 8
+        print(label, buffer_read_get(view, 0))
+    print(label, buffer_read_get(view, 0), borrow_buffer_drop(inner), borrow_buffer_drop(outer))
+print(borrow_buffer_drop(outer))
+''', "8 22\n7 11 0 -16\n0\n")
+
     def test_option_propagation_before_and_after_generic_acquisition(self):
         self.assert_runs('''fn count<T>(owner: BorrowBuffer<T>, before: Option<i64>, after: Option<i64>) -> Option<i64>:
     defer print("released", borrow_buffer_reserve(owner, 2))
@@ -252,6 +281,11 @@ print(buffer_read_len(view))
 let owner: BorrowBuffer<i64>
 inspect(owner)
 ''', "BufferRead разрешён только как локальное")
+
+    def test_view_type_must_be_inferred(self):
+        self.assert_rejected('''let owner: BorrowBuffer<i64>
+let view: BufferRead<i64> = borrow_buffer_read(owner)
+''', "без явной аннотации типа")
 
     def test_borrow_requires_its_hidden_cleanup_to_resolve(self):
         self.assert_rejected('''struct __volt_buffer_read_end:
