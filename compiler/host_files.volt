@@ -222,7 +222,7 @@ unsafe native fn cc_file_metadata(path: ptr<char>, metadata: ptr<u64>) -> i64:
     mov rsi, rdi
     mov rdi, -100
     xor edx, edx
-    mov r10d, 0x201
+    mov r10d, 0x301    # STATX_TYPE | STATX_INO | STATX_SIZE
     mov eax, 332
     syscall
 }
@@ -242,10 +242,10 @@ unsafe fn cc_read_file(path: i64, buf: ptr<ByteBuffer>, limit: i64):
         buf.len += n
     if buf.len > limit: cc_error(cv_cat(cv_text("слишком большой файл "), path), 0, 0)
 
-unsafe fn cc_read_text(path: i64) -> i64:
+unsafe fn cc_read_text_limit(path: i64, limit: i64) -> i64:
     if not cc_regular(path): cc_error(cv_cat(cv_text("файл не найден: "), path), 0, 0)
     let buffer: ByteBuffer
-    cc_read_file(path, &buffer, 8388608)
+    cc_read_file(path, &buffer, limit)
     let line: i64 = 1
     let begin: i64 = 0
     for i in 0..buffer.len:
@@ -259,6 +259,9 @@ unsafe fn cc_read_text(path: i64) -> i64:
     if cc_sources == 0: cc_sources = cv_dict()
     cv_set(cc_sources, path, text)
     return text
+
+unsafe fn cc_read_text(path: i64) -> i64:
+    return cc_read_text_limit(path, 8388608)
 
 unsafe fn cc_environment(name: i64) -> i64:
     let values: ptr<ptr<char>> = environment()

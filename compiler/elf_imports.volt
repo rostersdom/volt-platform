@@ -120,7 +120,7 @@ unsafe fn elf_library(path: i64, buf: ptr<ByteBuffer>) -> i64:
         if not cv_has(out.exports, name): cv_set(out.exports, name, value)
     return out as i64
 
-unsafe fn elf_find_lib(dirs: i64, name: i64) -> i64:
+unsafe fn elf_find_lib(dirs: i64, name: i64, source: i64, line: i64) -> i64:
     let exact: bool = cv_starts(name, cv_text(":"))
     let file: i64 = cv_cat(cv_cat(cv_text("lib"), name), cv_text(".so"))
     if exact: file = cv_subtext(name, 1, cv_len(name) - 1)
@@ -140,7 +140,7 @@ unsafe fn elf_find_lib(dirs: i64, name: i64) -> i64:
             bytes_free(&data)
             return library
         bytes_free(&data)
-    cc_error(cv_cat(cv_text("link: разделяемая библиотека x86-64 не найдена: -l"), name), 0, 0)
+    cc_error(cv_cat(cv_text("link: разделяемая библиотека x86-64 не найдена: -l"), name), source, line)
     return 0
 
 unsafe fn elf_libname(name: i64) -> bool:
@@ -187,7 +187,39 @@ unsafe fn elf_link_words(line: i64) -> i64:
         cv_push(out, cv_text(cv_cstring(part, pos)))
     return out
 
-unsafe fn elf_libraries(directives: i64) -> i64:
+unsafe fn elf_link_manifest(file: i64, dirs: i64, names: i64, origins: i64):
+    let source: i64 = cc_read_text_limit(file, 65536)
+    let length: i64 = cv_len(source)
+    let at: i64 = 0
+    let line_number: i64 = 0
+    let count: i64 = 0
+    while at < length:
+        let start: i64 = at
+        while at < length and cv_byte(source, at) != '\n': at += 1
+        let line: i64 = cv_strip(cv_subtext(source, start, at - start))
+        at += 1
+        line_number += 1
+        if cv_len(line) == 0 or cv_starts(line, cv_text("#")): continue
+        let number: i64 = cv_i(line_number)
+        count += 1
+        if count > 64: cc_error(cv_text("volt.mod: не более 64 записей"), file, number)
+        let eq: i64 = cv_find(line, cv_text("="), 0)
+        if eq <= 0: cc_error(cv_text("volt.mod: ожидалось имя = значение"), file, number)
+        let key: i64 = cv_strip(cv_subtext(line, 0, eq))
+        let value: i64 = cv_strip(cv_subtext(line, eq + 1, cv_len(line) - eq - 1))
+        if cv_name(key, "library"):
+            if not elf_libname(value): cc_error(cv_text("volt.mod: неверное имя разделяемой библиотеки"), file, number)
+            if not cv_has(names, value):
+                cv_add_set(names, value)
+                cv_set(origins, value, number)
+        elif cv_name(key, "library-dir"):
+            if cv_len(value) == 0: cc_error(cv_text("volt.mod: пустой путь к библиотекам"), file, number)
+            # This is one literal path, never a shell word or a linker option.
+            cv_push(dirs, cc_path_join(cc_dirname(file), value))
+        else:
+            cc_error(cv_text("volt.mod: допустимы только library и library-dir"), file, number)
+
+unsafe fn elf_libraries(directives: i64, manifest: i64) -> i64:
     let dirs: i64 = cv_list()
     let names: i64 = cv_vector(CV_SET)
     for i in 0..cv_len(directives):
@@ -205,11 +237,19 @@ unsafe fn elf_libraries(directives: i64) -> i64:
                 at += 1
             else:
                 cc_error(cv_cat(cv_text("запрещённый аргумент линковщика в link: "), cv_repr(word)), 0, 0)
+    let origins: i64 = 0
+    if manifest != 0:
+        origins = cv_dict()
+        elf_link_manifest(manifest, dirs, names, origins)
     cv_extend(dirs, x_words("/lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu /lib64 /usr/lib64 /lib /usr/lib /usr/local/lib"))
     let libs: i64 = cv_list()
     let seen: i64 = cv_vector(CV_SET)
     for i in 0..cv_len(names):
-        let lib: ptr<ElfLibrary> = elf_find_lib(dirs, cv_at(names, i)) as ptr<ElfLibrary>
+        let name: i64 = cv_at(names, i)
+        let line: i64 = cv_get(origins, name, 0)
+        let source: i64 = 0
+        if line != 0: source = manifest
+        let lib: ptr<ElfLibrary> = elf_find_lib(dirs, name, source, line) as ptr<ElfLibrary>
         if not cv_has(seen, lib.name):
             cv_add_set(seen, lib.name)
             cv_push(libs, lib as i64)

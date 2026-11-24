@@ -6,6 +6,7 @@ struct CCOptions:
     source: i64
     output: i64
     listing: i64
+    manifest: i64
     args: i64
     parse: bool
     asm_only: bool
@@ -34,13 +35,16 @@ unsafe fn cc_output_name(source: i64) -> i64:
         return cv_cat(cv_subtext(source, 0, cv_len(source) - 5), cv_text(".s"))
     return cv_cat(source, cv_text(".s"))
 
-unsafe fn cc_same_file(a: i64, b: i64) -> bool:
-    if cv_equal(cc_abspath(a), cc_abspath(b)): return true
+unsafe fn cc_same_existing_file(a: i64, b: i64) -> bool:
     let first: [32]u64
     let second: [32]u64
     if cc_file_metadata(cv_cptr(a), &first[0]) < 0: return false
     if cc_file_metadata(cv_cptr(b), &second[0]) < 0: return false
-    return first[4] == second[4] and first[17] == second[17]
+    return (first[0] & second[0] & 0x100) != 0 and first[4] == second[4] and first[17] == second[17]
+
+unsafe fn cc_same_file(a: i64, b: i64) -> bool:
+    if cv_equal(cc_abspath(a), cc_abspath(b)): return true
+    return cc_same_existing_file(a, b)
 
 unsafe fn cc_lines(buf: ptr<ByteBuffer>, code: ptr<AsmObject>, lines: i64, listing: bool):
     for i in 0..cv_len(lines):
@@ -156,6 +160,12 @@ unsafe fn cc_build(opts: ptr<CCOptions>) -> i64:
     let state: i64 = ccs_new(cc_load_modules(entry, links), entry)
     ccs_run(state)
     cc_error_file = 0
+    let manifest: i64 = 0
+    if opts.manifest != 0:
+        # Let the kernel resolve symlinks before interpreting `..`.
+        manifest = cc_path_join(cc_cwd, opts.manifest)
+        if (opts.output != 0 and cc_same_existing_file(opts.output, manifest)) or (opts.listing != 0 and cc_same_existing_file(opts.listing, manifest)):
+            cc_error(cv_text("нельзя перезаписывать манифест выходным файлом"), manifest, cv_i(1))
     if opts.asm_only and opts.listing == 0: opts.listing = cc_output_name(opts.source)
     if opts.output != 0 and cc_same_file(opts.output, entry): cc_error(cv_text("ELF должен быть отдельным файлом"), 0, 0)
     if opts.listing != 0:
@@ -170,7 +180,7 @@ unsafe fn cc_build(opts: ptr<CCOptions>) -> i64:
             put_str(cv_cptr(opts.listing) as string)
             nl()
         return 0
-    let libraries: i64 = elf_libraries(links)
+    let libraries: i64 = elf_libraries(links, manifest)
     let obj: AsmObject
     asm_setup(&obj)
     if opts.debug: obj.debug_functions = cv_list()
@@ -239,7 +249,7 @@ unsafe fn cc_cli() -> i64:
     let args: i64 = cc_args(1)
     let n: i64 = cv_len(args)
     if n == 0:
-        print("VOLT для Linux x86-64: volt FILE.volt [-o FILE] [-g] [--run] [--emit-asm] [--parse]")
+        print("VOLT для Linux x86-64: volt FILE.volt [-o FILE] [-g] [--manifest FILE] [--run] [--emit-asm] [--parse]")
         return 0
     if cv_name(cv_at(args, 0), "--launch"):
         cc_find_root()
@@ -256,7 +266,7 @@ unsafe fn cc_cli() -> i64:
             print("VOLT Language v0.3.0")
             return 0
         if cv_name(arg, "--help") or cv_name(arg, "-h"):
-            print("VOLT для Linux x86-64: volt FILE.volt [-o FILE] [-g] [--run] [--emit-asm] [--parse]")
+            print("VOLT для Linux x86-64: volt FILE.volt [-o FILE] [-g] [--manifest FILE] [--run] [--emit-asm] [--parse]")
             return 0
         if cv_name(arg, "--run"): opts.run = true
         elif cv_name(arg, "-g"): opts.debug = true
@@ -266,7 +276,7 @@ unsafe fn cc_cli() -> i64:
         elif cv_starts(arg, cv_text("--target=")):
             target = cv_subtext(arg, 9, cv_len(arg) - 9)
             if cv_len(target) == 0: cc_error(cv_text("--target требует значение"), 0, 0)
-        elif cv_name(arg, "--target") or cv_name(arg, "-o") or cv_name(arg, "--out") or cv_name(arg, "-S") or cv_name(arg, "--asm-file"):
+        elif cv_name(arg, "--target") or cv_name(arg, "-o") or cv_name(arg, "--out") or cv_name(arg, "-S") or cv_name(arg, "--asm-file") or cv_name(arg, "--manifest"):
             if i == n or cv_starts(cv_at(args, i), cv_text("-")): cc_error(cv_cat(arg, cv_text(" требует значение")), 0, 0)
             let item: i64 = cv_at(args, i)
             i += 1
@@ -274,6 +284,9 @@ unsafe fn cc_cli() -> i64:
                 if cv_ends(item, cv_text(".volt")): cc_error(cv_text("--target требует значение"), 0, 0)
                 target = item
             elif cv_name(arg, "-S") or cv_name(arg, "--asm-file"): opts.listing = item
+            elif cv_name(arg, "--manifest"):
+                if opts.manifest != 0: cc_error(cv_text("--manifest можно указать только один раз"), 0, 0)
+                opts.manifest = item
             else: opts.output = item
         elif cv_starts(arg, cv_text("-")): cc_error(cv_cat(cv_text("неизвестный флаг "), arg), 0, 0)
         elif opts.source != 0: cc_error(cv_cat(cv_text("лишний аргумент "), arg), 0, 0)
@@ -281,6 +294,7 @@ unsafe fn cc_cli() -> i64:
     if not cv_name(target, "linux-x86_64"): cc_error(cv_cat(cv_text("неподдерживаемая цель "), cv_repr(target)), 0, 0)
     if opts.source == 0: cc_error(cv_text("укажите файл .volt"), 0, 0)
     if opts.debug and (opts.parse or opts.asm_only): cc_error(cv_text("-g требует выходной ELF"), 0, 0)
+    if opts.manifest != 0 and (opts.parse or opts.asm_only): cc_error(cv_text("--manifest требует выходной ELF"), 0, 0)
     cc_find_root()
     cc_constants()
     x_init()
