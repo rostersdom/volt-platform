@@ -6,6 +6,11 @@ unsafe fn cc_find_module(file: i64, name: i64) -> i64:
     if not cv_equal(local, file) and cc_regular(local): return local
     let standard: i64 = cc_path_join(cc_std, filename)
     if not cv_equal(standard, file) and cc_regular(standard): return standard
+    # Optional components belong to this installation, not the working directory.
+    let components: [3]string = ["browser/modules", "gpu/modules", "tools/modules"]
+    for i in 0..len(components):
+        let module: i64 = cc_path_join(cc_path_join(cc_root, cv_text(components[i])), filename)
+        if not cv_equal(module, file) and cc_regular(module): return module
     cc_error(cv_cat(cv_cat(cv_text("модуль "), cv_repr(name)), cv_text(" не найден")), file, cv_i(1))
     return 0
 

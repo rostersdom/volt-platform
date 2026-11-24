@@ -209,7 +209,8 @@ unsafe fn cc_launch(args: i64) -> i64:
         put_errnl("volt-launch: usage: volt-launch [--] <source.volt|browser> [program args...]")
         return 2
     let entry: i64 = cv_at(args, pos)
-    let browser: i64 = cc_path_join(cc_root, cv_text("apps/browser.volt"))
+    let browser: i64 = cc_path_join(cc_root, cv_text("browser/browser.volt"))
+    if not cc_regular(browser): browser = cc_path_join(cc_root, cv_text("apps/browser.volt"))
     if cv_name(entry, "browser"): entry = browser
     if cv_starts(entry, cv_text("-")) or not cv_ends(entry, cv_text(".volt")) or not cc_regular(entry):
         put_err("volt-launch: source not found or not a .volt file: ")

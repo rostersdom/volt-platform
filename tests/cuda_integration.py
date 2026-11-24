@@ -9,7 +9,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEMO = ROOT / "apps" / "cuda_smoke.volt"
+DEMO = ROOT / "gpu" / "cuda_smoke.volt"
 FIXTURE = ROOT / "tests" / "fixtures" / "cuda_driver.c"
 MARKER = "CUDA PTX smoke passed: 19 + 23 = 42\n"
 CREATE = "init\ncount\ncontext\nalloc\nHtoD\nmodule\nlaunch\n"

@@ -18,7 +18,7 @@ class BrowserLaunchTests(unittest.TestCase):
         cls.addClassCleanup(temporary.cleanup)
         cls.directory = Path(temporary.name)
         cls.browser = cls.directory / "browser"
-        build = subprocess.run([str(ROOT / "volt"), str(ROOT / "apps/browser.volt"), "-o", str(cls.browser)],
+        build = subprocess.run([str(ROOT / "volt"), str(ROOT / "browser/browser.volt"), "-o", str(cls.browser)],
                                cwd=ROOT, capture_output=True, text=True, timeout=30)
         if build.returncode:
             raise RuntimeError(build.stdout + build.stderr)

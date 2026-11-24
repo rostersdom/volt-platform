@@ -9,7 +9,7 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKLOADS = ("apps/browser.volt", "compiler/volt_main.volt")
+WORKLOADS = ("browser/browser.volt", "compiler/volt_main.volt")
 
 
 def main():

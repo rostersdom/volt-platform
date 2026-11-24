@@ -2,7 +2,7 @@
 
 **English** · [Русский](README.ru.md) · [Español](README.es.md)
 
-[Quick start](#quick-start) · [Browser](#try-the-volt-browser) ·
+[Quick start](#quick-start) · [Components](#components) · [Browser](#try-the-volt-browser) ·
 [Platform specification](#platform-specification) · [Full language specification](#volt-030-language-specification)
 
 **VOLT Platform** brings together the VOLT systems programming language, its
@@ -34,14 +34,19 @@ The compiler builds from the checked-in [static bootstrap](bootstrap/README.md).
 It does not need Python or a C/C++ compiler. Run `make verify-bootstrap` to
 build two generations with an empty `PATH` and compare them byte for byte.
 
-## What is in the repository?
+## Components
 
-| Component | What it does |
+| Component | Sources and build |
 | --- | --- |
-| [`compiler/`](compiler/) | The VOLT compiler, written in VOLT. It supports type inference, generics, checked array indexing and integer arithmetic, `match`, `Option`, `Result`, `defer`, and a limited System V C FFI. |
-| [`vstd/`](vstd/) | Core types and buffers, file and network APIs, [JSON](docs/json.md), and optional bindings including [CUDA](docs/cuda.md). |
-| [`apps/`](apps/) and [`examples/`](examples/) | The browser, an [offline search CLI](docs/search.md), and examples. Search indexes only the local files you provide; it does not crawl the web. |
-| [`tests/`](tests/) and [`benchmarks/`](benchmarks/) | Golden-output tests, compiler regressions, loopback integration tests, and repeatable benchmarks. |
+| **VOLT Language** | The [language reference](#volt-030-language-specification), self-hosted [`compiler/`](compiler/) and static [`bootstrap/`](bootstrap/). Build `./volt` with `make compiler`. |
+| **VOLT Standard Library** | [`vstd/`](vstd/): runtime support, buffers, files, networking, and shared parsers such as [JSON](docs/json.md) and HTML. |
+| **VOLT Browser & Media** | [`browser/`](browser/): native browser, layout and rendering modules, JavaScript workers, and the video decoder. Build with `make browser`, `make browser-js`, or `make browser-media`. |
+| **VOLT GPU** | [`gpu/`](gpu/): optional [CUDA](docs/cuda.md) bindings and a PTX demo. Build the demo with `make cuda`; a GPU is needed only to run it. |
+| **VOLT Tools** | [`tools/`](tools/): [offline search](docs/search.md) and a Linux `.volt` launcher. Build with `make tools`, `make search`, or `make launcher`. |
+| **Examples and checks** | [`apps/`](apps/) and [`examples/`](examples/) hold demos and assets; [`tests/`](tests/) and [`benchmarks/`](benchmarks/) verify the components. |
+
+The compiler and standard library work without the optional components. The
+default output directory for applications and workers is still `apps/bin/`.
 
 ## Try the VOLT browser
 
@@ -70,7 +75,9 @@ WebKit, or another browser.
   direct file when one is available. The official YouTube player, MediaSource
   (MSE), and DRM are not supported.
 
-See the [browser documentation](docs/html-engine.md) for setup and limits.
+See the [browser documentation](docs/html-engine.md) for setup and limits, and
+[source and dependencies](docs/html-engine.md#исходники-и-внешние-зависимости)
+for the implementation map and the distinction from TNet.
 
 ## Platform specification
 
@@ -469,8 +476,10 @@ print(sum(middle)) # 50
 
 ### 7. Modules and program start
 
-`use NAME` (or `use A, B`) looks for `NAME.volt` beside the importing source
-and then in `vstd/`. A module is loaded once; dependencies initialise before
+`use NAME` (or `use A, B`) looks for `NAME.volt` beside the importing source,
+then under the compiler's installation root in `vstd/`, `browser/modules/`,
+`gpu/modules/`, and `tools/modules/`, in that order. Module names do not depend
+on the source directory layout. A module is loaded once; dependencies initialise before
 the modules that import them. Cycles are errors. Imported declarations share
 one namespace; there are no module aliases or visibility modifiers. `io` and
 `str` are auto-imported. A module can declare `const`, global `let` with a

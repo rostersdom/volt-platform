@@ -10,13 +10,13 @@
 
 ```sh
 demo=$(mktemp -d "${TMPDIR:-/tmp}/volt-search.XXXXXX")
-./volt apps/volt_search.volt -o "$demo/volt-search"
+make BINDIR="$demo" search
 "$demo/volt-search" 'ёжик' tests/search_body.txt tests/search_title.html > "$demo/results.html"
 ```
 
 Откройте `"$demo/results.html"` в браузере VOLT, например
 `apps/bin/browser "$demo/results.html"`, если браузер уже собран. Для сборки
-отдельного бинарника: `./volt apps/browser.volt -o "$demo/browser"`. Проверка
+отдельного бинарника: `make BINDIR="$demo" browser`. Проверка
 без окна: `"$demo/browser" --check "$demo/results.html"`.
 
 Можно передать свои абсолютные или относительные пути. Ошибка чтения, разбора

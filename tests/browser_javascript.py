@@ -76,12 +76,15 @@ class BrowserJavaScriptSuite:
         temporary = tempfile.TemporaryDirectory(prefix="volt-js-")
         cls.addClassCleanup(temporary.cleanup)
         cls.dir = Path(temporary.name)
-        (cls.dir / "vstd").symlink_to(ROOT / "vstd", target_is_directory=True)
-        cls.compiler = cls.dir / "volt"
+        install = cls.dir / "toolchain"
+        install.mkdir()
+        for name in ("vstd", "browser"):
+            (install / name).symlink_to(ROOT / name, target_is_directory=True)
+        cls.compiler = install / "volt"
         cls.viewer = cls.dir / "browser"
         subprocess.run([str(ROOT / "bootstrap/volt-linux-x86_64"), "compiler/volt_main.volt", "-o", str(cls.compiler)],
                        cwd=ROOT, check=True, timeout=90)
-        subprocess.run([str(cls.compiler), "apps/browser.volt", "-o", str(cls.viewer)], cwd=ROOT, check=True, timeout=30)
+        subprocess.run([str(cls.compiler), "browser/browser.volt", "-o", str(cls.viewer)], cwd=ROOT, check=True, timeout=30)
         target = cls.dir / cls.worker_name if cls.worker_name == "volt-js" else "browser-js-modern"
         # The worker targets need no rebuild of the shared ./volt.
         subprocess.run(["make", f"BINDIR={cls.dir}", "-o", str(cls.viewer), str(target)],

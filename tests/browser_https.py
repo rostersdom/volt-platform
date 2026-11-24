@@ -30,7 +30,7 @@ class BrowserHttpsTests(unittest.TestCase):
             raise RuntimeError(generated.stdout + generated.stderr)
         cls.exe = cls.root / "browser"
         built = subprocess.run(
-            [str(ROOT / "volt"), str(ROOT / "apps" / "browser.volt"), "-o", str(cls.exe)],
+            [str(ROOT / "volt"), str(ROOT / "browser" / "browser.volt"), "-o", str(cls.exe)],
             cwd=ROOT, capture_output=True, text=True, timeout=60,
         )
         if built.returncode:

@@ -33,7 +33,7 @@ class BrowserSearch(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.work = Path(cls.temp.name)
         cls.exe = cls.work / "volt-search"
-        built = subprocess.run([str(ROOT / "volt"), "apps/volt_search.volt", "-o", str(cls.exe)],
+        built = subprocess.run([str(ROOT / "volt"), "tools/volt_search.volt", "-o", str(cls.exe)],
                                cwd=ROOT, capture_output=True, text=True, timeout=30)
         if built.returncode:
             raise AssertionError(built.stdout + built.stderr)

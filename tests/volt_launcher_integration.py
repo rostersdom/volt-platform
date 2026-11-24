@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FRONTEND = ROOT / "apps" / "volt_launcher.volt"
+FRONTEND = ROOT / "tools" / "volt_launcher.volt"
 
 
 class VoltLauncherIntegration(unittest.TestCase):
@@ -89,7 +89,7 @@ class VoltLauncherIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="volt-no-demo-") as tmp:
             install = Path(tmp)
             shutil.copy2(ROOT / "volt", install / "volt")
-            for name in ("apps", "vstd"):
+            for name in ("browser", "vstd"):
                 (install / name).symlink_to(ROOT / name, target_is_directory=True)
             env = {"VOLT_COMPILER": str(install / "volt")}
             fallback = self.invoke("browser", "--check", env=env)

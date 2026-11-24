@@ -79,7 +79,7 @@ class BrowserVisual(unittest.TestCase):
         cls.addClassCleanup(temp.cleanup)
         cls.directory = Path(temp.name)
         cls.binary = cls.directory / "browser"
-        subprocess.run([str(ROOT / "volt"), "apps/browser.volt", "-o", str(cls.binary)],
+        subprocess.run([str(ROOT / "volt"), "browser/browser.volt", "-o", str(cls.binary)],
                        cwd=ROOT, timeout=30, check=True, capture_output=True)
 
     def setUp(self):

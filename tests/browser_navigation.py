@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "apps" / "browser.volt"
+SOURCE = ROOT / "browser" / "browser.volt"
 DOCUMENT_LIMIT = 2 * 1024 * 1024
 
 

@@ -37,12 +37,17 @@ construye dos generaciones sucesivas con `PATH` vacío y las compara byte a byte
 
 ## Componentes
 
-| Componente | Función |
+| Componente | Fuentes y compilación |
 | --- | --- |
-| [`compiler/`](compiler/) | Compilador escrito en VOLT. Incluye inferencia de tipos, genéricos, comprobación de índices y de desbordamientos de enteros, `match`, `Option`, `Result`, `defer` y una interfaz limitada para C (System V). |
-| [`vstd/`](vstd/) | Tipos y búferes básicos, archivos, red, [JSON](docs/json.md) e integraciones opcionales como [CUDA](docs/cuda.md). |
-| [`apps/`](apps/) y [`examples/`](examples/) | Navegador, [búsqueda local](docs/search.md) y ejemplos. La búsqueda solo indexa los archivos que le indiques y no accede a Internet. |
-| [`tests/`](tests/) y [`benchmarks/`](benchmarks/) | Pruebas de salida, regresión e integración local, además de mediciones reproducibles. |
+| **Lenguaje VOLT** | [Especificación](#especificación-del-lenguaje-volt-030), [`compiler/`](compiler/) y binario inicial estático en [`bootstrap/`](bootstrap/). `make compiler` genera `./volt`. |
+| **Biblioteca estándar** | [`vstd/`](vstd/): entorno de ejecución, búferes, archivos, red y analizadores compartidos, como [JSON](docs/json.md) y HTML. |
+| **Navegador y multimedia** | [`browser/`](browser/): navegador nativo, módulos de diseño y renderizado, procesos JavaScript y decodificador de vídeo. Usa `make browser`, `make browser-js` o `make browser-media`. |
+| **GPU** | [`gpu/`](gpu/): enlaces opcionales a [CUDA](docs/cuda.md) y ejemplo PTX. `make cuda` compila el ejemplo; la GPU solo se necesita al ejecutarlo. |
+| **Herramientas** | [`tools/`](tools/): [búsqueda local](docs/search.md) y lanzador `.volt` para Linux. Usa `make tools`, `make search` o `make launcher`. |
+| **Ejemplos y pruebas** | [`apps/`](apps/) y [`examples/`](examples/) contienen ejemplos y recursos; [`tests/`](tests/) y [`benchmarks/`](benchmarks/) verifican los componentes. |
+
+El compilador y la biblioteca estándar funcionan sin los componentes opcionales.
+Los ejecutables de aplicaciones y procesos auxiliares se siguen guardando en `apps/bin/` por defecto.
 
 ## Probar el navegador VOLT
 
@@ -70,7 +75,9 @@ WebKit ni otro navegador.
   reproducir un archivo directo compatible, si está disponible. El reproductor
   oficial de YouTube, MediaSource (MSE) y DRM no están disponibles.
 
-Consulta la [documentación del navegador](docs/html-engine.md) para más detalles.
+Consulta la [documentación del navegador](docs/html-engine.md) y la lista de
+[código y dependencias](docs/html-engine.md#исходники-и-внешние-зависимости),
+que distingue el navegador de la propuesta TNet.
 
 ## Especificación de la plataforma
 
@@ -474,8 +481,9 @@ print(sum(middle)) # 50
 
 ### 7. Módulos e inicio del programa
 
-`use NAME` o `use A, B` busca `NAME.volt` junto al archivo que importa y
-después en `vstd/`. Cada módulo se carga una vez; las dependencias se
+`use NAME` o `use A, B` busca `NAME.volt` junto al archivo que importa y luego
+en `vstd/`, `browser/modules/`, `gpu/modules/` y `tools/modules/`, en ese orden,
+bajo la raíz de instalación del compilador. Cada módulo se carga una vez; las dependencias se
 inicializan primero y los ciclos son errores. Las declaraciones comparten
 un espacio de nombres, sin alias ni modificadores de visibilidad. `io` y
 `str` se importan automáticamente. Un módulo admite `const`, `let` global

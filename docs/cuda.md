@@ -12,7 +12,7 @@ x86-64 (System V ABI, glibc 2.34+). Компилятор не используе
 
 ```bash
 out=$(mktemp -d "${TMPDIR:-/tmp}/volt-cuda.XXXXXX")
-./volt apps/cuda_smoke.volt -o "$out/cuda-smoke"
+make BINDIR="$out" cuda
 CUDA_CACHE_DISABLE=1 "$out/cuda-smoke"
 ```
 

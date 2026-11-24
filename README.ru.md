@@ -2,7 +2,7 @@
 
 [English](README.md) · **Русский** · [Español](README.es.md)
 
-[Быстрый старт](#быстрый-старт) · [Браузер](#браузер-volt) ·
+[Быстрый старт](#быстрый-старт) · [Компоненты](#структура) · [Браузер](#браузер-volt) ·
 [Спецификация платформы](#спецификация-платформы) ·
 [Полная спецификация языка](#спецификация-языка-volt-030)
 
@@ -67,7 +67,7 @@ apps/bin/browser --screenshot apps/bin/layout.png examples/layout.html # сни�
 ./volt apps/rift.volt --run       # рогалик: WASD/стрелки, бой, лут, этажи
 ./volt apps/sort.volt --run       # сортировка и массивы
 ./volt apps/bytebuffer.volt --run # чтение файла и владение ByteBuffer
-./volt apps/volt_launcher.volt -o apps/bin/volt-launch # launcher .volt для Linux
+make launcher                    # launcher .volt для Linux
 ./volt tests/process_exec.volt --run # fork/exec/wait syscalls
 ./volt apps/c_ffi.volt --run      # вызов функций libc
 ./volt apps/http_get.volt --run   # HTTP/1.0 GET к 127.0.0.1:8080
@@ -144,7 +144,8 @@ JavaScript выполняется отдельным процессом. Вме�
 воркер QuickJS-NG с поддержкой современного синтаксиса и `Promise`:
 `make browser-js-modern QUICKJS_DIR=/путь/к/quickjs-amalgam`. Обычная сборка
 `make browser` использует только зависимости рендеринга и транспорта.
-Список поддерживаемых возможностей приведён в [документации движка](docs/html-engine.md).
+Список возможностей приведён в [документации движка](docs/html-engine.md).
+Там же указаны [функции, библиотеки и источник обсуждения TNet](docs/html-engine.md#исходники-и-внешние-зависимости).
 
 ### Поиск, JSON и CUDA
 
@@ -156,9 +157,9 @@ JavaScript выполняется отдельным процессом. Вме�
   Пример запускает готовое PTX-ядро; CUDA Toolkit и `nvcc` не обязательны.
 
 ```sh
-./volt apps/volt_search.volt -o apps/bin/volt-search
+make search
 apps/bin/volt-search 'ёжик' tests/search_body.txt tests/search_title.html > apps/bin/results.html
-./volt apps/cuda_smoke.volt -o apps/bin/cuda-smoke
+make cuda
 CUDA_CACHE_DISABLE=1 apps/bin/cuda-smoke # требует доступный NVIDIA GPU
 ```
 
@@ -170,7 +171,7 @@ launcher и привязку MIME для текущего пользовател
 
 ```bash
 mkdir -p ~/.local/bin ~/.local/share/applications ~/.local/share/mime/packages
-./volt apps/volt_launcher.volt -o apps/bin/volt-launch
+make launcher
 cp apps/bin/volt-launch ~/.local/bin/volt-launch
 cp share/applications/volt-launcher.desktop ~/.local/share/applications/
 cp share/mime/packages/volt.xml ~/.local/share/mime/packages/
@@ -182,7 +183,7 @@ xdg-mime default volt-launcher.desktop text/x-volt
 После входа в систему файловый менеджер сможет открывать `.volt` через launcher.
 Команда `volt-launch [--] <source.volt|browser> [args...]` передаёт программу и
 аргументы в компилятор по абсолютному пути из `VOLT_COMPILER`. Команда с
-псевдонимом `browser` собирает `apps/browser.volt` из того же дерева.
+псевдонимом `browser` собирает `browser/browser.volt` из того же дерева.
 `--` отделяет флаги запуска от пути к исходнику. Аргументы после пути
 передаются собранной программе. Относительные пути разрешаются от каталога
 запуска. В интерактивном терминале launcher запрашивает подтверждение перед
@@ -277,18 +278,17 @@ fn main() -> i64:
 
 ## Структура
 
-```
-volt                 исполняемый компилятор (результат make compiler)
-compiler/            компилятор на VOLT, включая кодирование x86-64 и запись ELF
-bootstrap/           начальный статический компилятор Linux x86-64
-vstd/                стандартные модули VOLT
-docs/language.md     справочник по языку
-ROADMAP.md           этапы развития
-apps/                приложения VOLT и bin/ для собранных исполняемых файлов
-examples/            входные данные и ресурсы приложений
-tests/               тесты и регрессии
-benchmarks/          повторяемые замеры производительности
-```
+| Компонент | Исходники и сборка |
+| --- | --- |
+| **Язык VOLT** | [Спецификация](docs/language.md), самособирающийся [`compiler/`](compiler/) и статический [`bootstrap/`](bootstrap/). `make compiler` создаёт `./volt`. |
+| **Стандартная библиотека VOLT** | [`vstd/`](vstd/): рантайм, буферы, файлы, сеть и общие парсеры, например JSON и HTML. |
+| **Браузер и медиа VOLT** | [`browser/`](browser/): нативный браузер, раскладка и рендеринг, JavaScript-воркеры и декодер видео. Сборка: `make browser`, `make browser-js` или `make browser-media`. |
+| **VOLT GPU** | [`gpu/`](gpu/): опциональный модуль [CUDA](docs/cuda.md) и пример PTX. `make cuda` собирает пример; GPU нужен только при запуске. |
+| **Утилиты VOLT** | [`tools/`](tools/): [локальный поиск](docs/search.md) и запуск `.volt` из Linux. Сборка: `make tools`, `make search` или `make launcher`. |
+| **Примеры и проверки** | [`apps/`](apps/) и [`examples/`](examples/) — примеры и ресурсы; [`tests/`](tests/) и [`benchmarks/`](benchmarks/) — общие проверки. |
+
+Компилятор и стандартная библиотека работают без опциональных компонентов.
+Готовые приложения и воркеры по умолчанию остаются в `apps/bin/`.
 
 ## Ограничения
 
@@ -1055,7 +1055,9 @@ print(name[0], name == "VOLT", str_len(name))
 
 ### 7. Модули
 
-Файл подключается словом `use` (ищется рядом с текущим файлом, затем в `vstd/`):
+Файл подключается словом `use`. Компилятор ищет `NAME.volt` рядом с импортирующим
+файлом, затем по порядку в `vstd/`, `browser/modules/`, `gpu/modules/` и
+`tools/modules/` относительно корня установки. Имена модулей от путей не зависят:
 ```
 use math
 use fs, process
@@ -1196,9 +1198,15 @@ Linux x86-64 с glibc ≥ 2.34. `unsafe thread_spawn` запускает тип�
 | [`json`](docs/json.md) | Потенциально недоверенный UTF-8 с явной длиной, поля и индексы, точные диапазоны чисел, чтение и экранирование строк; до 8 МиБ и 64 вложенных контейнеров. `JsonValue` заимствует неизменённый исходный буфер. Универсального сериализатора нет. |
 | [`http`, `dns`, `tls`](docs/http.md) | Ограниченный HTTP GET по IPv4, разрешение имени в IPv4 и HTTPS через OpenSSL 3 с проверкой сертификата и имени сервера. |
 | [`sdl`, `window`](docs/sdl.md) | Необязательная привязка SDL2 для окна, событий и программного рендеринга. |
-| [`html`, `css`](docs/html-engine.md) | Подмножества HTML и CSS; раскладка и взаимодействие выполняются движком VOLT, не реализацией полного стандарта Web. |
-| [`browser_search`](docs/search.md) | Индекс в памяти по явно переданным локальным файлам, без поиска в сети. |
-| [`cuda`](docs/cuda.md) | Необязательная загрузка `libcuda.so.1`, память GPU и запуск переданного PTX; генерации GPU-кода из VOLT нет. |
+| [`html`](vstd/html.volt) | Парсер подмножества HTML, общий для браузера и локального поиска. |
+
+**Опциональные компоненты:**
+
+| Компонент | Возможности и контракт |
+| --- | --- |
+| [`browser/`](docs/html-engine.md) | `use css` и модули движка VOLT для раскладки и взаимодействия, не реализация полного стандарта Web. |
+| [`tools/`](docs/search.md) | `use browser_search`: индекс в памяти по явно переданным локальным файлам, без поиска в сети. |
+| [`gpu/`](docs/cuda.md) | `use cuda`: загрузка `libcuda.so.1`, память GPU и запуск переданного PTX; генерации GPU-кода из VOLT нет. |
 
 ### 9. Границы реализации
 

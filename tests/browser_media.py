@@ -84,9 +84,10 @@ class BrowserMedia(unittest.TestCase):
         # HTTP validation, player and decoder all follow the production path.
         stage = self.folder / "youtube-fixture"
         shutil.copytree(ROOT / "vstd", stage / "vstd")
+        shutil.copytree(ROOT / "browser" / "modules", stage / "browser" / "modules")
         shutil.copy2(ROOT / "volt", stage / "volt")
         shutil.copy2(ROOT / "tests/fixtures/youtube_transport.volt",
-                     stage / "vstd/browser_youtube_transport.volt")
+                     stage / "browser/modules/browser_youtube_transport.volt")
         binary = self.folder / "youtube-view"
         build = subprocess.run([str(stage / "volt"), "tests/fixtures/browser_youtube.volt", "-o", str(binary)],
                                cwd=ROOT, capture_output=True, text=True, timeout=30)

@@ -54,6 +54,24 @@ class Bootstrap(unittest.TestCase):
             demo.write_text('for i in 1..=3: print(i)\n', encoding="utf-8")
             self.assertEqual(invoke(second, demo, "--run"), "1\n2\n3\n")
 
+            # A compiler installed without optional components can load them
+            # once installed, without changing the module name or using cwd.
+            project = tree / "project"
+            project.mkdir()
+            demo = project / "main.volt"
+            demo.write_text("use component_probe\nprint(component_origin())\n", encoding="utf-8")
+            locations = (project, tree / "vstd", tree / "browser/modules",
+                         tree / "gpu/modules", tree / "tools/modules")
+            for index, location in enumerate(locations):
+                location.mkdir(parents=True, exist_ok=True)
+                (location / "component_probe.volt").write_text(
+                    f"fn component_origin() -> i64:\n    return {index}\n", encoding="utf-8")
+            (tree / "component_probe.volt").write_text("not a VOLT module\n", encoding="utf-8")
+            for index, location in enumerate(locations):
+                with self.subTest(module_root=location.relative_to(tree)):
+                    self.assertEqual(invoke(second, demo, "--run"), f"{index}\n")
+                (location / "component_probe.volt").unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

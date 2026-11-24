@@ -2,8 +2,10 @@
 
 ## Браузер
 
-`apps/browser.volt` открывает локальный HTML, HTTP или HTTPS и рисует страницу
-движком VOLT. Браузер поддерживает относительные ссылки, переходы к `#якорям`,
+[`browser/browser.volt`](../browser/browser.volt) открывает локальный HTML, HTTP
+или HTTPS и рисует страницу движком VOLT. Модули находятся в `browser/modules/`,
+а дополнительные воркеры JavaScript и декодирования — в `browser/workers/`.
+Браузер поддерживает относительные ссылки, переходы к `#якорям`,
 адресную строку и историю на 32 позиции в пределах сеанса. После перенаправления
 адрес и относительные ссылки используют конечный URL. Переходы по якорям внутри
 страницы меняют прокрутку и историю без сетевого запроса. Локальные ссылки
@@ -60,6 +62,25 @@ apps/bin/browser --screenshot apps/bin/layout.png examples/layout.html
 
 Внешние шрифты, SVG, сложные алгоритмы таблиц и полные Flexbox и Grid остаются
 за пределами текущего подмножества. Сетевые лимиты описаны в [HTTP](http.md).
+
+## Исходники и внешние зависимости
+
+Разбор страниц, раскладка и навигация реализованы в VOLT. Браузер не встраивает
+Chromium или WebKit. Внешние библиотеки выполняют отдельные задачи:
+
+| Задача | Код и функции VOLT | Внешние библиотеки |
+| --- | --- | --- |
+| Загрузка страницы | `browser_controller_navigate_url`, `browser_load_http_peer` в [контроллере](../browser/modules/browser_controller.volt); `dns_resolve_ipv4` в [DNS](../vstd/dns.volt), `http_connect` в [HTTP](../vstd/http.volt) | DNS — `getaddrinfo` из libc; HTTPS — `SSL_connect`, `SSL_read`, `SSL_write` из OpenSSL 3 в [TLS-модуле](../vstd/tls.volt). |
+| HTML, CSS и раскладка | `html_parse` в [общем HTML-парсере](../vstd/html.volt), `css_parse` в [CSS-модуле](../browser/modules/css.volt), `browser_layout_visual` в [контроллере](../browser/modules/browser_controller.volt) | Парсеры и раскладка — код проекта, а не внешний веб-движок. |
+| Текст, изображения и окно | `browser_draw_document` в [отрисовке](../browser/modules/browser_document.volt); `--check` без снимка использует `paint_document_fragments_on` в [программном рендерере](../browser/modules/paint.volt) | Pango измеряет текст, Cairo рисует, SDL2 показывает кадр. Cairo, TurboJPEG и libwebp декодируют изображения, zlib распаковывает gzip. |
+| JavaScript и видео | `browser_js_prepare` в [контроллере](../browser/modules/browser_controller.volt), `browser_video_stream_append` в [плеере](../browser/modules/browser_video.volt) | Duktape или QuickJS-NG для JS и FFmpeg/libav для видео и звука работают в отдельных [воркерах](../browser/workers/) с libseccomp. |
+| Локальный поиск | `browser_search_add` и `browser_search_query` в [индексе](../tools/modules/browser_search.volt) | `volt-search` читает только переданные файлы и не обращается к сети. |
+
+**TNet («текстовая сеть»).** Источник обсуждения — [спецификация TNet Protocols 2.0 от TextNet Foundation](https://github.com/TextNet-Foundation/TNet-Protocols/blob/main/v2.0-ru.md).
+В ней TMUTP передаёт документы в формате TMkUp. Этот протокол рассматривался
+как вариант отдельного текстового режима, но не был реализован в VOLT и не
+является зависимостью браузера. VOLT открывает локальный HTML и HTTP(S); ни
+растровая проверка `--check`, ни локальный поиск не используют TNet.
 
 ## Нативное видео
 
@@ -231,7 +252,7 @@ apps/bin/browser --js --check examples/interactive.html
 разбора таблиц HTML5 пока не реализованы. Режим raw-text обрабатывает `script`
 и `style`.
 
-`vstd/css.volt` предоставляет начальный parser вида `selector { property: value; }`.
+`browser/modules/css.volt` предоставляет начальный парсер вида `selector { property: value; }`.
 Он хранит диапазоны исходной строки, разделяет grouped selectors на отдельные
 записи и сохраняет флаг `!important`. Лимиты на весь stylesheet: 64 KiB, 1024
 правила, 4096 selectors и 8192 declarations. Есть комментарии, кавычки и скобки
