@@ -112,7 +112,7 @@ unsafe fn json_quote(text: ptr<char>, length: i64, out: ptr<char>, capacity: i64
 
 ```sh
 set -eu
-build=$(mktemp -d /tmp/opencode/volt-json.XXXXXX)
+build=$(mktemp -d "${TMPDIR:-/tmp}/volt-json.XXXXXX")
 for name in json_reader json_strings; do
   ./volt "tests/$name.volt" -o "$build/$name"
   "$build/$name" > "$build/$name.out"

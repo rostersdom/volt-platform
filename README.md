@@ -2,6 +2,9 @@
 
 **English** · [Русский](README.ru.md) · [Español](README.es.md)
 
+[Quick start](#quick-start) · [Browser](#try-the-volt-browser) ·
+[Platform specification](#platform-specification) · [Full language specification](#volt-030-language-specification)
+
 **VOLT Platform** brings together the VOLT systems programming language, its
 self-hosted compiler and standard library, and a native browser for **Linux
 x86-64**. The compiler generates x86-64 machine code and writes ELF executables
@@ -69,6 +72,20 @@ WebKit, or another browser.
 
 See the [browser documentation](docs/html-engine.md) for setup and limits.
 
+## Platform specification
+
+| Subsystem | Implemented behaviour and limits |
+| --- | --- |
+| Bootstrap and compilation | A static ELF seed builds the compiler from VOLT sources. Module loading, parsing, type checking, x86-64 encoding, and ELF emission run inside `volt`. `make verify-bootstrap` compares two rebuilt executables with no external tools on `PATH`. |
+| Browser UI and rendering | VOLT owns navigation, layout, and hit testing. Local HTML and HTTP(S), session history, anchors, stop/retry, resize, zoom, and 640×480 PNG screenshots are supported. HTML is capped at 2 MiB; Grid, Flexbox, media queries, and PNG/JPEG/WebP support are limited to the documented subset. |
+| Page resources | Styles and images use same-origin HTTP(S) or confined local paths. Classic scripts run only with `--js`; external scripts come from the same origin over HTTP(S), including redirects, using the document peer's IP address. A Content Security Policy disables scripts. The worker has no network access, with a 750 ms initialization budget and at most 16 scripts totalling 64 KiB. |
+| Media | Direct video is loaded on request, up to 32 MiB. `volt-media` decodes supported streams; VOLT presents frames up to 960×540 and sends PCM to SDL. An internal fragmented-MP4 mode supports clear H.264 with optional AAC, up to 1 MiB per append and 32 MiB per session. It is not a web MediaSource implementation. |
+| Local search | `volt-search` indexes supplied HTML and UTF-8 text files in memory, matches Russian and ASCII words case-insensitively, and writes linked HTML results. It accepts at most 64 files of 256 KiB each and never sends queries over the network. |
+| GPU | `use cuda` loads the NVIDIA driver on demand on Linux x86-64 with glibc 2.34 or later. The demo runs supplied PTX, transfers data, synchronizes, and releases resources. It does not compile VOLT functions to GPU code. |
+
+[Browser and media](docs/html-engine.md) · [HTTP/TLS](docs/http.md) ·
+[JSON](docs/json.md) · [Local search](docs/search.md) · [CUDA](docs/cuda.md)
+
 ## Tests and documentation
 
 ```sh
@@ -82,4 +99,411 @@ worker tests are skipped when their dependencies are unavailable. The CUDA
 example needs a compatible NVIDIA driver to run on a GPU, but no CUDA Toolkit
 or `nvcc` to build. The base compiler and browser do not require CUDA.
 
-[Language reference](docs/language.md) · [Roadmap](ROADMAP.md) · [MIT license](LICENSE)
+[Russian language reference](docs/language.md) · [Roadmap](ROADMAP.md) · [MIT license](LICENSE)
+
+## VOLT 0.3.0 language specification
+
+This describes the implemented language and its reference compiler, targeting
+`linux-x86_64` (Linux, x86-64 System V ABI). The [roadmap](ROADMAP.md) and the
+[slice proposal](docs/slices-proposal.md) describe future work, not additional
+guarantees of this version.
+
+**Contents:** [Source and compiler](#0-source-text-and-compiler) ·
+[Types and conversions](#1-bindings-types-and-conversions) ·
+[Expressions](#2-expressions) · [Statements](#3-statements-and-cleanup) ·
+[Functions and ABI](#4-functions-and-abi) ·
+[Data types and matching](#5-structures-enums-and-matching) ·
+[Memory](#6-arrays-slices-pointers-and-memory) ·
+[Modules](#7-modules-and-program-start) · [Library](#8-standard-library) ·
+[Limits](#9-implementation-boundaries).
+
+### 0. Source text and compiler
+
+- A colon introduces a block. Statements in the same block use the same
+  indentation; a nested block uses a greater indentation. `native fn` uses
+  braces for its assembly body, not for ordinary VOLT statements.
+- Identifiers are case-sensitive and have the form `[A-Za-z_][A-Za-z0-9_]*`.
+  `#` and `//` introduce line comments; `/* … */` comments do not nest.
+- Integers can be decimal, hexadecimal (`0xFF`), or binary (`0b1010`). Digits
+  can use separators such as `1_000`. Decimal floats have a fractional part
+  (`1.25`) or exponent (`2e-3`). A float literal starts as `f64`; an integer
+  literal is `i64`, or `u64` if it is larger than `i64`'s maximum and fits in
+  `u64`. A literal outside the supported range is a compile-time error.
+- Strings use double quotes and `char` uses single quotes. The escape sequences
+  are `\n`, `\r`, `\t`, `\\`, `\"`, `\'`, and `\0`; `\0` is valid only in a
+  `char` literal. `char` represents a byte, not an arbitrary Unicode character.
+  The compiler accepts up to 8 MiB per source file and rejects NUL bytes in it.
+
+| Command | Result |
+| --- | --- |
+| `./volt prog.volt -o prog` | Write a Linux ELF executable. `--out` is an alias for `-o`. |
+| `./volt prog.volt --run` | Compile and return the program's exit status; remove the temporary executable when `-o` is not supplied. |
+| `./volt prog.volt --emit-asm` | Emit the assembly listing only; the default name is derived from the source path. |
+| `./volt prog.volt -S prog.s -o prog` | Write both an assembly listing and an ELF executable. `--asm-file` is an alias for `-S`. |
+| `./volt prog.volt --parse` | Print the syntax tree without type checking or generating machine code. |
+| `./volt --version` | Print the compiler version. |
+
+`--target linux-x86_64` is the default and only target. With no output path,
+the compiler puts the ELF in `$TMPDIR` or `/tmp`. The bootstrap does not use
+an external assembler or linker.
+
+### 1. Bindings, types, and conversions
+
+```volt
+let count: i64 = 42
+let ratio = 3.14
+let byte: u8 = 255
+const LIMIT: i64 = 100
+print(count, ratio, byte, LIMIT)
+```
+
+| Type | Size in bytes | Meaning |
+| --- | --- | --- |
+| `i8`, `i16`, `i32`, `i64` | 1, 2, 4, 8 | Signed integers |
+| `u8`, `u16`, `u32`, `u64` | 1, 2, 4, 8 | Unsigned integers |
+| `f32`, `f64` | 4, 8 | IEEE 754 floating-point values |
+| `bool` | 1 | `true` or `false` |
+| `char` | 1 | Byte value, 0–255; printed as a byte, unlike `u8` |
+| `string`, `ptr<T>` | 8 each | An immutable NUL-terminated string, or a raw pointer to `T` |
+| `fnptr<(A, B) -> R>` | 8 | Typed native function address for C callbacks |
+| `[N]T` | `N × sizeof(T)` | Fixed-size array |
+| `[]T` | 16 | Read-only slice: pointer and element count |
+| Structure type | Depends on its fields | Named aggregate with natural alignment |
+| Enum type | 8 | Nominal `i64` discriminant, no payload |
+| `Option<T>`, `Result<T,E>` | Depends on the payload | Built-in, inline tagged values |
+
+The aliases are `int = i64`, `uint = u64`, and `float = f64`. A local `let`
+is mutable. Without a type annotation, its type is inferred from the initializer;
+without an initializer, an annotation is required and types that permit it are
+zero-initialized. A `const` is immutable, at module or local scope. Its scalar
+initializer is evaluated at compile time: supported expressions include
+literals of eligible types, arithmetic, casts, enum variants, `sizeof`,
+`alignof`, and earlier constants. Ordinary function calls are not const evaluation.
+Constants can have integer, floating-point, `bool`, `char`, or enum types,
+not `string`, pointers, or aggregates.
+
+`as` performs explicit casts. Initialization, assignment, ordinary declared
+parameters (including foreign calls), and return values share numeric conversion
+rules. An integer must fit the destination; narrowing never silently wraps.
+Float-to-integer conversion truncates toward zero, and traps on NaN, infinity,
+or an out-of-range result. Integer-to-float conversion rounds directly to
+destination precision, ties to even; `f64` to `f32` can overflow to infinity.
+Arithmetic and comparison do not mix integers and floats without `as`.
+For mixed signed/unsigned integer operands the common type is unsigned if the
+unsigned width is equal or larger, otherwise it is the wider signed type.
+Generic type inference and `Option`/`Result` constructors require exact matching
+where described below; numeric conversions do not reconcile mismatched payloads.
+
+### 2. Expressions
+
+| Precedence, low to high | Operators |
+| --- | --- |
+| 1–3 | `or`, then `and`, then `not` |
+| 4 | `==`, `!=`, `<`, `<=`, `>`, `>=` |
+| 5–7 | bitwise `\|`, then `^`, then `&` |
+| 8 | `<<`, `>>` |
+| 9 | `+`, `-` |
+| 10 | `*`, `/`, `%` |
+| 11 | prefix `-`, `*`, `&` |
+| 12 | named calls, field access `.`, indexing/slicing `[]`, `as`, postfix `?` |
+
+- Integer arithmetic traps on overflow or division by zero, including overflow
+  in unsigned arithmetic. Integer division truncates toward zero:
+  `-7 / 2 == -3` and `-7 % 2 == -1`. `%` is not a floating-point operator.
+- The shift count must be in `[0, bit_width)` for the left operand. Signed right
+  shift preserves the sign bit, unsigned right shift fills with zeros. Left
+  shift discards high bits rather than trapping on their loss; for example,
+  `(64 as i8) << 1` is `-128`.
+- Floating-point arithmetic follows IEEE 754. Infinity and NaN can be results;
+  unary minus changes the sign, including for zero. In numeric or boolean
+  conditions, zero, `false`, and NaN are false; other numeric values and
+  `true` are true. `and` and `or` short-circuit and return `bool`.
+- `sizeof(T)` and `alignof(T)` are compile-time `i64` byte counts. `len(x)`
+  returns an array or slice length; `str_len(s)` returns a string's byte length.
+  Strings use content equality with `==` and `!=`, `s + t` for concatenation,
+  and `s * n` for repetition.
+
+### 3. Statements and cleanup
+
+`if` / `elif` / `else`, `while`, and `for` take indented bodies. A supported
+statement can also follow the colon on the same line (`if x < 0: return 1`).
+Assignments, including `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`,
+and `>>=`, are statements, not expressions. Arrays, structures, and
+`Option`/`Result` do not serve as conditions. Use `match` or `?` for the built-in
+result types.
+
+`for i in a..b` is half-open; `for i in a..=b` includes the final bound.
+Both bounds are evaluated once and converted to `i64` with range checks;
+enum bounds are not accepted. `i` has type `i64`. Reversed ranges are empty;
+equal bounds produce one iteration only with `..=`. `break` exits the nearest
+loop and `continue` advances it. Ranges are syntax here, not first-class types.
+
+`defer` registers a simple operation, such as a call or assignment, when
+execution reaches it. Operations on exit from that block run last-in,
+first-out on fallthrough, `return`, `break`, `continue`, or a propagated `?`.
+Only scopes being exited are cleaned up. Locals used by `defer` must already
+be declared, and are read when the deferred code runs. The return value is
+saved before cleanup. `defer` does not accept declarations, nested `defer`, or
+control flow; `panic` and `exit` terminate the process without unwinding it.
+
+```volt
+fn total() -> i64:
+    let sum = 0
+    defer print("cleanup", sum)
+    for i in 1..=3:
+        sum += i
+    return sum
+
+let answer = total()
+print("total", answer)
+```
+
+### 4. Functions and ABI
+
+An ordinary function is declared `fn name(arg: T) -> R:` followed by a body.
+Omit `-> R` for a procedure with no result. Value-returning functions must
+return a value on each path recognised by the compiler. Declare typed parameters
+on the same line. Named arguments, defaults, nested functions, and overloads are not
+supported. Functions are called by name. `unsafe fn` permits unsafe operations
+in its body and can only be called in an unsafe context.
+
+- The x86-64 ABI has six integer-class argument registers (`rdi`, `rsi`,
+  `rdx`, `rcx`, `r8`, `r9`) and eight floating-point registers (`xmm0` through
+  `xmm7`). The implementation does not support stack arguments. A slice consumes
+  two integer-class registers. A structure or built-in tagged value passed to
+  ordinary VOLT code consumes one pointer register and is copied into the
+  callee's storage. Aggregate results use a hidden caller-owned result pointer
+  (`sret`), which consumes one of the six integer-class registers. The return
+  value is snapshotted before `defer` runs. Arrays cannot be passed or returned
+  by value; a slice can be passed but not returned.
+- **Generic functions** such as `fn identity<T>(value: T) -> T:` are specialised
+  at compile time for each inferred type combination. Inference uses arguments,
+  including type arguments of nested structures and pointers. Conflicting types
+  for the same parameter are rejected; generic foreign/assembly functions are
+  not implemented.
+- **C FFI:** `unsafe extern fn` declares an external symbol with a fixed
+  signature. `link "-lc"` requests a shared ELF library. A C-facing call uses
+  supported scalar and pointer types. Pass aggregate data via pointers to
+  caller-owned storage; the VOLT aggregate ABI is not the C ABI. Arrays,
+  structures, slices, and tagged values by value, variadic calls, and automatic
+  VOLT function exports are not supported in foreign signatures.
+- **Callbacks:** `fnptr<(A, B) -> R>` or `fnptr<(A, B)>` (no return value)
+  describes a supported scalar C signature. In `unsafe`, pass
+  `callback(named_function)` to C; types and the register limits are checked.
+  VOLT cannot call a `fnptr` value directly or capture a lexical environment.
+- **Native code:** `native fn` uses a supported subset of Intel x86-64
+  assembly and is always unsafe. The compiler emits the prologue and epilogue;
+  the body must not contain `ret`. The function must honour the calling
+  convention, including any required preservation of registers and the stack.
+
+```volt
+native fn raw_add(a: i64, b: i64) -> i64:
+{
+    mov rax, rdi
+    add rax, rsi
+}
+
+unsafe:
+    print(raw_add(2, 3))
+```
+
+This example passes a named VOLT function to the standard C `qsort` routine;
+it requires the system libc library.
+
+```volt
+link "-lc"
+unsafe extern fn qsort(base: ptr<i32>, n: u64, size: u64, cmp: fnptr<(ptr<char>, ptr<char>) -> i32>)
+
+unsafe fn compare(a: ptr<char>, b: ptr<char>) -> i32:
+    let left: i32 = *(a as ptr<i32>)
+    let right: i32 = *(b as ptr<i32>)
+    if left < right: return -1
+    if left > right: return 1
+    return 0
+
+let values: [3]i32 = [5, 3, 4]
+unsafe: qsort(&values[0], 3 as u64, 4 as u64, callback(compare))
+print(values[0], values[1], values[2]) # 3 4 5
+```
+
+### 5. Structures, enums, and matching
+
+Structures declare named fields and construct values with positional arguments
+in declaration order. Fields use natural alignment; the structure alignment
+is the maximum field alignment and the size is rounded up to it. Nested
+structures, arrays of structures, and by-value copies are supported. Generic
+structures have a separate layout for each type combination. Constructors use
+the destination type when provided, otherwise infer type arguments from the
+fields. A recursive structure may refer to itself through a pointer.
+
+```volt
+struct Item<T>:
+    index: i64
+    value: T
+
+fn item_value<T>(item: Item<T>) -> T:
+    return item.value
+
+let item: Item<u32> = Item(0, 42)
+print(item.index, item_value(item), sizeof(Item<u32>))
+```
+
+An `enum` stores an `i64` tag. If the first variant has no explicit value, it
+gets zero. Each later implicit value is the previous discriminant plus one;
+an explicit declaration like `Green = 4` changes that sequence. Use
+`Name.Variant`, compare only the
+same enum with `==`/`!=`, or explicitly convert a variant to `i64`. Enum
+variants do not carry data; enums used with `match` need unique discriminants.
+
+`match` is a statement, not an expression. It evaluates the subject once and
+requires at least one arm. Its patterns are `_`, `Enum.Variant`, `None`,
+`Some(name)`, `Ok(name)`, and `Err(name)`. Every variant must be covered exactly
+once; `_` covers the remaining variants and is last. Other types, overlapping
+patterns, guards, and structural destructuring are unsupported. Each binding
+is an immutable copy visible only in that arm. For `Option`/`Result`, match a
+local value or parameter rather than a temporary constructor.
+
+`Option<T>` has `None` or `Some(T)`. `Result<T,E>` has `Ok(T)` or `Err(E)`.
+Use an explicit type or sufficient context to determine both type arguments
+when a constructor alone is ambiguous. For example, `let r: Result<i64, i32> =
+Err(22 as i32)` has a payload of exactly `i32`. These built-ins accept integers,
+floats, `bool`, `char`, enums, strings, or raw pointers without nested wrappers;
+they do not accept arrays, structures, slices, or nested tagged values as
+payloads. They can be local values, ordinary VOLT parameters, and results, but
+not globals, constants, fields, array elements, or zero-initialized bindings.
+Reassignment of a local or parameter copies the same tagged type after evaluating
+the right-hand side once; unused payload bytes are cleared.
+
+The postfix `?` extracts the successful payload. `None` or `Err` returns from
+the enclosing ordinary VOLT function, running its registered `defer` actions.
+With `Option`, the enclosing return type must be the same `Option<T>`. With
+`Result`, the error type must match exactly, but the success types can differ.
+`?` may appear in a nested expression and is not available in `extern` or
+`native` code.
+
+```volt
+fn square(input: Result<i64, i32>) -> Result<i64, i32>:
+    let value = input?
+    return Ok(value * value)
+
+let input: Result<i64, i32> = Ok(7)
+let result = square(input)
+match result:
+    Ok(value): print(value)
+    Err(code): print(code)
+```
+
+Tagged values are inline, not heap boxes. The first eight bytes are an `i64`
+tag: `Option` uses 0 for `None`, 1 for `Some`; `Result` uses 0 for `Ok`, 1 for
+`Err`. Let `P` and `A` be the payload size and alignment (the maxima over
+`T` and `E` for `Result`). The payload offset is `align_up(8, A)`; the overall
+alignment is `max(8, A)` and the size is
+`align_up(align_up(8, A) + P, max(8, A))`. `align_up` here means rounding up to
+a multiple, not a VOLT function. `None` has zeroed payload storage. The internal
+VOLT call convention copies tagged parameters into the callee and tagged
+results through `sret`, preserving the result across cleanup. It is not a
+stable C type layout or call contract.
+
+### 6. Arrays, slices, pointers, and memory
+
+- **Arrays:** `[N]T` uses a fixed element count; `N` is an integer literal, not
+  a generic parameter. Indexing checks `0 <= i < N`. List initializers must fit;
+  omitted trailing elements are zeroed. Without an annotation, a non-empty
+  list initializer determines the length and takes its type from its first
+  element. Arrays of the same type can be copied;
+  use slices or pointers to pass their data to a function. Local arrays use
+  stack storage.
+- **Slices:** `data[start..end]` creates a borrowed read-only `[start, end)` view
+  of a local array. Bounds are signed integers and must satisfy
+  `0 <= start <= end <= len(data)`; an empty slice is valid. A slice stores a
+  pointer and element count, not capacity, and has 8-byte alignment. Indexing
+  and `len` use that count. The compiler rejects writes through the slice and
+  direct writes to a borrowed array or a second slice of it in the same
+  function. It does not implement a full borrow checker or lifetime inference.
+  No mutable slices, slice of a
+  slice, implicit array-to-slice conversion, slice returns, aggregate/global
+  slice storage, or slice C ABI.
+- **Raw pointers:** `&place` produces a pointer to an addressable target.
+  Dereference, indexing, accessing a field through a pointer, pointer
+  arithmetic, and raw casts require `unsafe`. `p + i`, `i + p`, and `p - i`
+  use steps of `sizeof(T)`; compare pointers of the same type, not a pointer
+  and an integer. Raw operations do not check lifetime, address, or bounds.
+- **Strings:** a `string` is an immutable NUL-terminated byte sequence, not an
+  owning, counted buffer. Indexing checks bounds and returns a byte, not a
+  Unicode character. `str_len` scans to NUL, as does checked indexing. String
+  literals cannot contain NUL. The shared arena for dynamic concatenation and
+  repetition is 1 MiB per process; exhaustion traps. This is not a cap on
+  explicit byte buffers. Use an explicit unsafe cast at a C string boundary.
+- **Buffers:** `ByteBuffer` stores bytes, including NUL, with length and
+  capacity. `Buffer<T>` does the same for typed elements. Start from zeroed
+  storage, keep one owner, free it explicitly (often with `defer`), and do not
+  retain pointers to elements after growth or release. `buffer_at` checks
+  its index. `ByteVec` instead offers a checked handle and `ByteView` a
+  counted range: growth does not invalidate the range, but dropping the
+  underlying buffer invalidates all copies and views. The handle registry is
+  limited to 64 simultaneous buffers; `get` operations return `Result` and
+  invalid handles are reported rather than dereferenced.
+
+```volt
+fn sum(values: []i64) -> i64:
+    let total = 0
+    for i in 0..len(values):
+        total += values[i]
+    return total
+
+let data: [4]i64 = [10, 20, 30, 40]
+let middle: []i64 = data[1..3]
+print(sum(middle)) # 50
+```
+
+### 7. Modules and program start
+
+`use NAME` (or `use A, B`) looks for `NAME.volt` beside the importing source
+and then in `vstd/`. A module is loaded once; dependencies initialise before
+the modules that import them. Cycles are errors. Imported declarations share
+one namespace; there are no module aliases or visibility modifiers. `io` and
+`str` are auto-imported. A module can declare `const`, global `let` with a
+constant initializer, and top-level calls for initialization.
+
+The entry source is different: its top-level executable statements run after
+module initialization, before a locally declared `main`. Top-level `let` in
+that file is local to the generated entry point, not shared module storage.
+Use `fn main() -> i64` to return an exit status, or `fn main():` for a
+procedure. `main` must have no parameters; `use process` provides `argc` and
+`arg_at`. With no returned status the program exits with 0.
+
+`link "-lNAME"` requests `libNAME.so`; `-l:FILE` uses an exact library filename,
+and `-LPATH` adds an ELF library search path at build time. The Linux dynamic
+loader resolves linked libraries at runtime. These declarations do not
+provide a full libc startup/shutdown protocol.
+
+### 8. Standard library
+
+| API | Contract |
+| --- | --- |
+| Intrinsics | `sin`, `cos`, `tan`, `log2`, `atan2`, `sqrt`, `abs`, `min`, `max`, `len`, `sizeof`, and `alignof`. `panic` reports a failure to stderr and exits; `exit` terminates with a status. Neither unwinds scopes. |
+| Linux runtime | `read`, `write`, `write_all`, `open`, `close`, `mmap`, `munmap`, and `brk` expose low-level operations. Callers must obey the raw-memory contract and check return values; these are not ownership abstractions. |
+| `io`, `str` | `print` separates values with spaces and appends a newline; `put_*`, `put_err`, `put_errnl`, and `nl` support explicit output. Integer output is decimal; floats normally use six fractional digits, with scientific notation for large values. Writes fail with `panic` rather than silently dropping an error. `str_len`, `str_eq`, `str_concat`, and `str_repeat` operate on NUL strings. |
+| [`math`](vstd/math.volt), [`math3d`](vstd/math3d.volt) | Numeric constants and helpers (including `powi`, `ipowi`, and `hypot`), vectors and matrices. Integer powers and factorials are checked; integer negative powers truncate the reciprocal toward zero. |
+| [`time`](vstd/time.volt), [`fs`](vstd/fs.volt) | `monotonic_ms() -> Result<i64, i32>` measures intervals, not wall time. `file_size(path) -> Result<i64, i32>` uses `statx` and reports the logical size, including holes in sparse files. Errnos in `Err` are positive. |
+| [`process`](vstd/process.volt) | `argc`, `arg_at`, and the raw environment read the initial Linux stack. `arg_at` returns a borrowed string or `Err(22)` for an invalid index. `process_exec_wait` runs an executable without a shell. |
+| [`event`](vstd/event.volt) | `poll` checks multiple descriptors and writes `revents`; it is unsafe because it writes to the backing array of a read-only slice. `poll_readable` returns flags for one descriptor. The timeout is signed `i32` milliseconds (`-1` waits indefinitely, `0` checks without waiting). `poll` returns 0 on a timeout. Nonblocking monotonic `timerfd` supports one-shot and periodic timers via `timer_create`, `timer_set`, `timer_read`, and `timer_close`; `first_ms = 0` disarms, and a read without an expiration reports `Err(11)`. |
+| [`bytes`](vstd/bytes.volt), [`buffer`](vstd/buffer.volt), [`bytevec`](vstd/bytevec.volt), [`utf8`](vstd/utf8.volt) | Counted storage, checked byte handles, and UTF-8 code-point helpers. `utf8_next` consumes one byte on invalid input and returns U+FFFD. |
+| [`json`](docs/json.md) | Read one UTF-8 JSON document (8 MiB, at most 64 nested containers); inspect fields, array elements, booleans and exact numeric spans. Decoding and quoting strings use caller-owned buffers and byte lengths. `JsonValue` borrows the unchanged input. No general object/array serializer. |
+| [`http`, `dns`, `tls`](docs/http.md) | Bounded HTTP/IPv4 GET, hostname resolution, and HTTPS through OpenSSL 3 with certificate and hostname checks. This is not a general socket or async runtime API. |
+| [`sdl`, `window`](docs/sdl.md), [`html`, `css`](docs/html-engine.md) | Optional SDL2 bindings and partial HTML/CSS support for the native browser. |
+| [`browser_search`](docs/search.md), [`cuda`](docs/cuda.md) | Offline local-document index and optional CUDA driver bindings. CUDA loads `libcuda.so.1` on request and can execute supplied PTX; VOLT does not generate GPU code. |
+
+### 9. Implementation boundaries
+
+Linux x86-64 and the documented ABI subset are the only supported target.
+Runtime checks on indexing and arithmetic do not make raw pointers and FFI
+memory-safe. `unsafe` is a caller obligation, not a sandbox. There is no general
+borrow checker, automatic destruction, or garbage collector. User-defined
+tagged unions, traits, const generics, closures, tuple types, macros, the VOLT
+language feature `async`/`await`, and arbitrary inline assembly blocks are not
+implemented. JavaScript promises and GPU dispatch are separate integrations.
+
+The language behaviour is exercised by the [golden tests](tests/run.py),
+[compiler regression tests](tests/regressions.py), and
+[bootstrap verification](bootstrap/README.md).
