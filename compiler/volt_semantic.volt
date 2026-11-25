@@ -1035,6 +1035,10 @@ unsafe fn ccs_check_slice_return_signature(v_fn: i64):
     for i in 0..cv_len(v_params):
         let v_param: i64 = cv_at(v_params, i)
         if cv_equal(cv_at(v_param, 0), v_source):
+            if cc_is_owned_ptr(cv_at(v_param, 1)):
+                # Срез байтов владельца: источник — адрес владельца, а не другой срез.
+                cv_field(v_fn, "ret_source_index", cv_i(i))
+                return
             if not cv_equal(cv_at(v_param, 1), v_ret):
                 cc_error(cv_text("from должен называть параметр неизменяемого slice того же типа, что и результат"), v_file, v_line)
                 return
@@ -2177,6 +2181,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
         v_bt = ccs_tf(v_self, v_base, 0)
         let v_mutable: i64 = cv_getkey(v_e, "mutable")
         let v_owner: i64 = 0
+        let v_raw: bool = false
         if cv_classes(v_bt, "TArray") and cv_classes(v_base, "VarRef"):
             v_owner = cv_getkey(v_base, "slot")
         elif not cv_truth(v_mutable) and cv_classes(v_bt, "TSlice") and not cc_is_mut_slice(v_bt):
@@ -2187,7 +2192,14 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
             v_owner = ccs_slice_origin(v_base)
             if v_owner != 0 and cv_classes(v_base, "VarRef"):
                 cv_add_set(cv_getkey(v_self, "frozen_mut_slots"), cv_getkey(v_base, "slot"))
-        if v_owner == 0:
+        elif not cv_truth(v_mutable) and cv_truth(cc_is_ptr(v_bt)) and not cc_is_owned_ptr(v_bt):
+            # Срез от raw-указателя не имеет лексического источника: unsafe сам
+            # отвечает за границы и время жизни. Хранить такой срез в let нельзя —
+            # только вернуть из функции с from по адресу владельца.
+            ccs_require_unsafe(v_self, v_e, cv_text("срез от raw-указателя"))
+            ccs_ensure_layout(v_self, cv_getkey(v_bt, "elem"))
+            v_raw = true
+        if v_owner == 0 and not v_raw:
             cc_error(cv_text("slice source должен быть локальным массивом или неизменяемым slice с известным источником"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
             return 0
         let unpack_27: i64 = cv_pair(ccs_tf(v_self, cv_getkey(v_e, "start"), 0), ccs_tf(v_self, cv_getkey(v_e, "end"), 0))
@@ -2504,6 +2516,19 @@ unsafe fn ccs_bind_slice_call_result(v_self: i64, v_e: i64, v_fn: i64):
     let v_index: i64 = cv_getkey(v_fn, "ret_source_index")
     if v_index == 0: return
     let v_arg: i64 = cv_subscript(cv_getkey(v_e, "args"), v_index)
+    let v_source_param: i64 = cv_subscript(cv_getkey(v_fn, "sig_params"), v_index)
+    if cc_is_owned_ptr(cv_at(v_source_param, 1)):
+        # Адрес владельца: срез заимствует его слот до конца блока вызова;
+        # перенос запрещает проход владения (owner_slice_borrow).
+        let v_owner_slot: i64 = 0
+        if cv_classes(v_arg, "AddrOf") and cv_classes(cv_getkey(v_arg, "x"), "VarRef"):
+            v_owner_slot = cv_getkey(cv_getkey(v_arg, "x"), "slot")
+        if v_owner_slot == 0 or not cc_is_owned(cv_getkey(v_owner_slot, "typ")):
+            cc_error(cv_text("аргумент from должен быть адресом локального владельца"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
+            return
+        cv_field(v_e, "slice_origin", v_owner_slot)
+        cv_field(v_e, "owner_slice_borrow", v_owner_slot)
+        return
     let v_origin: i64 = ccs_slice_origin(v_arg)
     # A view of an array must still be backed by the caller's lexical owner loan.
     if v_origin == 0 or (cv_classes(cv_getkey(v_origin, "typ"), "TArray") and not cv_contains(cv_getkey(v_self, "borrowed_slots"), v_origin)):
@@ -3875,7 +3900,9 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
             let v_fn: i64 = cv_getkey(v_self, "fn")
             if cv_classes(cv_getkey(v_fn, "sig_ret"), "TSlice"):
                 let v_source: i64 = cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_fn, "ret_source_index"))
-                if ccs_slice_origin(cv_getkey(v_st, "value")) != v_source:
+                # Источник по адресу владельца: доверенный домашний модуль сам строит
+                # срез из сырого хранилища, лексического источника у него нет.
+                if not cc_is_owned_ptr(cv_getkey(v_source, "typ")) and ccs_slice_origin(cv_getkey(v_st, "value")) != v_source:
                     let v_msg: i64 = cv_cat(cv_text("return: срез должен происходить из параметра "), cv_getkey(v_fn, "ret_source"))
                     cc_error(v_msg, cv_getkey(v_fn, "file"), cv_getkey(v_st, "line"))
                     return 0

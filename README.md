@@ -484,7 +484,8 @@ stable C type layout or call contract.
   [`fs.OwnedFd`](docs/owned-fd.md) move through `let`, calls and returns. Live
   owners drop once after their block's `defer`: the buffer frees its storage
   and the descriptor is closed exactly once, with no double close of a reused
-  descriptor number.
+  descriptor number. `owned_buffer_bytes(&buffer)` lends the bytes as a `[]u8`
+  slice without copying; the buffer cannot move while the slice is alive.
 
 ```volt
 fn sum(values: []i64) -> i64:

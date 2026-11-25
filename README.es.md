@@ -488,7 +488,9 @@ Es una convención interna de VOLT, no un ABI de C.
   [`fs.OwnedFd`](docs/owned-fd.md) se mueven con `let`, al llamar o al
   retornar; los propietarios vivos se liberan después de `defer` exactamente
   una vez: el búfer libera su memoria y el descriptor se cierra sin un doble
-  `close` de un número reutilizado.
+  `close` de un número reutilizado. `owned_buffer_bytes(&buffer)` presta los
+  bytes como un slice `[]u8` sin copiar; el búfer no puede moverse mientras el
+  slice esté vivo.
 
 ```volt
 fn sum(values: []i64) -> i64:

@@ -21,12 +21,19 @@ fn owned_buffer_new(initial: string) -> OwnedBuffer:
 fn owned_buffer_from_bytes(storage: ByteBuffer) -> OwnedBuffer:
     return OwnedBuffer(storage)
 
-# &owner is accepted only as an immediate argument to these two readers.
+# &owner is accepted only as an immediate argument to these readers.
 fn owned_buffer_len(buffer: ptr<OwnedBuffer>) -> i64:
     unsafe: return buffer.storage.len
 
 fn owned_buffer_get(buffer: ptr<OwnedBuffer>, index: i64) -> u8:
     unsafe: return bytes_get(&buffer.storage, index)
+
+# All bytes of the buffer as a slice, without copying. The slice borrows the
+# owner until the end of its block: while it is alive the buffer cannot be
+# moved, and the slice cannot outlive the buffer's scope.
+fn owned_buffer_bytes(buffer: ptr<OwnedBuffer>) -> []u8 from buffer:
+    unsafe:
+        return buffer.storage.data[0..buffer.storage.len]
 
 fn __volt_owned_buffer_drop(buffer: ptr<OwnedBuffer>):
     unsafe:

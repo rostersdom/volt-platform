@@ -2363,6 +2363,10 @@ unsafe fn cce_emit_slice(v_self: i64, v_expr: i64) -> i64:
     if cv_classes(v_typ, "TSlice"):
         cce_e(v_self, cv_text("mov rdx, qword ptr [rax+8]"))
         cce_e(v_self, cv_text("mov rax, qword ptr [rax]"))
+    elif cv_classes(v_typ, "TPtr"):
+        # Raw pointer: the unsafe caller guarantees the range; no length to check.
+        cce_e(v_self, cv_text("mov rax, qword ptr [rax]"))
+        cce_e(v_self, cv_text("mov rdx, rax"))
     else:
         cce_e(v_self, cv_cat(cv_text("mov rdx, "), cv_format(cv_getkey(v_typ, "n"), "")))
     cce_abi_mov(v_self, "mov", v_address, cv_text("rax"))
@@ -2380,8 +2384,9 @@ unsafe fn cce_emit_slice(v_self: i64, v_expr: i64) -> i64:
     cce_e(v_self, cv_cat(cv_text("js "), cv_format(v_bad, "")))
     cce_e(v_self, cv_text("cmp rcx, rax"))
     cce_e(v_self, cv_cat(cv_text("jg "), cv_format(v_bad, "")))
-    cce_abi_mov(v_self, "cmp", cv_text("rax"), v_length)
-    cce_e(v_self, cv_cat(cv_text("jg "), cv_format(v_bad, "")))
+    if not cv_classes(v_typ, "TPtr"):
+        cce_abi_mov(v_self, "cmp", cv_text("rax"), v_length)
+        cce_e(v_self, cv_cat(cv_text("jg "), cv_format(v_bad, "")))
     cce_e(v_self, cv_cat(cv_text("jmp "), cv_format(v_valid, "")))
     cce_label(v_self, v_bad, 0)
     cce_emit_panic(v_self, cv_text("volt: invalid slice range\n"))

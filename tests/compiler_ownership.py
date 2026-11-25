@@ -264,6 +264,58 @@ let item = owned_buffer_new("a")
 print(owned_buffer_len(&item) * text(item))
 ''', "drop a\ntext\n")
 
+    def test_slice_reader_borrows_owner_until_block_exit(self):
+        self.check_run('''fn count(data: []u8) -> i64:
+    let total = 0
+    for i in 0..len(data):
+        total += data[i]
+    return total
+
+let buffer = owned_buffer_new("ab")
+if true:
+    let bytes = owned_buffer_bytes(&buffer)
+    let head = bytes[0..1]
+    defer print("defer", bytes[1] as char)
+    print(count(bytes), len(bytes), head[0] as char)
+let moved = buffer
+print("moved", owned_buffer_len(&moved))
+''', "195 2 a\ndefer b\nmoved 2\ndrop a\n")
+
+    def test_slice_reader_rejects_move_while_slice_alive(self):
+        header = '''fn consume(input: OwnedBuffer):
+    return
+
+let buffer = owned_buffer_new("ab")
+'''
+        for source, expected in (
+            ("let bytes = owned_buffer_bytes(&buffer)\nlet moved = buffer", "пока срез заимствует его байты"),
+            ("let bytes = owned_buffer_bytes(&buffer)\nconsume(buffer)", "пока срез заимствует его байты"),
+            ("if true:\n    let bytes = owned_buffer_bytes(&buffer)\n    let moved = buffer", "пока срез заимствует его байты"),
+            ("print(len(owned_buffer_bytes(&buffer)))\nlet moved = buffer", "пока срез заимствует его байты"),
+            ("fn tail8(data: []u8) -> []u8 from data:\n    return data[1..len(data)]\n"
+             "let rest = tail8(owned_buffer_bytes(&buffer))\nlet moved = buffer", "пока срез заимствует его байты"),
+        ):
+            with self.subTest(source=source):
+                built = self.build(header + source + "\n")
+                self.assertEqual(built.returncode, 1, built.stdout + built.stderr)
+                self.assertIn(expected, built.stderr)
+
+    def test_slice_reader_rejects_escape_beyond_owner(self):
+        for source, expected in (
+            ("fn leak(input: []u8) -> []u8 from input:\n"
+             "    let local = owned_buffer_new(\"ab\")\n"
+             "    return owned_buffer_bytes(&local)", "срез должен происходить из параметра input"),
+            ("fn leak() -> []u8:\n"
+             "    let local = owned_buffer_new(\"ab\")\n"
+             "    return owned_buffer_bytes(&local)", "без явно указанного источника"),
+            ("let buffer = owned_buffer_new(\"ab\")\n"
+             "let bytes = owned_buffer_bytes(buffer)", "вместо"),
+        ):
+            with self.subTest(source=source):
+                built = self.build(source + "\n")
+                self.assertEqual(built.returncode, 1, built.stdout + built.stderr)
+                self.assertIn(expected, built.stderr)
+
     def test_rejects_moves_from_maybe_moved_or_borrowed_slots(self):
         header = '''fn consume(input: OwnedBuffer):
     return

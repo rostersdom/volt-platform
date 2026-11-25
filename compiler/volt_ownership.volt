@@ -18,6 +18,7 @@ unsafe fn cc_owner_kinds(sem: i64) -> i64:
     let buffer_readers: i64 = cv_list()
     cv_push(buffer_readers, cv_text("owned_buffer_len"))
     cv_push(buffer_readers, cv_text("owned_buffer_get"))
+    cv_push(buffer_readers, cv_text("owned_buffer_bytes"))
     let fd_readers: i64 = cv_list()
     cv_push(fd_readers, cv_text("owned_fd_number"))
     let kinds: i64 = cv_list()
@@ -117,6 +118,9 @@ unsafe fn ccs_check_ownership(sem: i64, fn_def: i64):
     cv_field(flow, "frames", cv_list())
     cv_field(flow, "loops", cv_list())
     cv_field(flow, "pinned", cv_vector(CV_SET))
+    # Слоты владельцев, чьи байты заимствует живой срез (owned_buffer_bytes):
+    # пин действует до конца блока, как заимствование массива срезом.
+    cv_field(flow, "slice_borrows", cv_vector(CV_SET))
     let scopes: i64 = cv_dict()
     cv_field(flow, "scopes", scopes)
     cv_field(fn_def, "owner_scopes", scopes)
@@ -155,6 +159,8 @@ unsafe fn cc_owned_expr(flow: i64, moved: i64, expr: i64, use_kind: i64):
         if deferred: cc_owned_error(flow, expr, cv_cat(cv_text("defer не может переносить или создавать "), title))
         if cv_classes(expr, "VarRef"):
             if slot == 0 or cv_contains(moved, cv_i(slot)): cc_owned_error(flow, expr, cv_cat(title, cv_text(" использован после переноса")))
+            if cv_contains(cv_getkey(flow, "slice_borrows"), cv_i(slot)):
+                cc_owned_error(flow, expr, cv_cat(title, cv_text(" нельзя перенести, пока срез заимствует его байты")))
             if cv_contains(cv_getkey(flow, "pinned"), cv_i(slot)) or cv_contains(cv_getkey(flow, "call_reads"), cv_i(slot)):
                 cc_owned_error(flow, expr, cv_cat(title, cv_text(" нельзя перенести, пока он заимствован вызовом или defer")))
             cv_add_set(moved, cv_i(slot))
@@ -193,6 +199,10 @@ unsafe fn cc_owned_expr(flow: i64, moved: i64, expr: i64, use_kind: i64):
             else:
                 cc_owned_expr(flow, moved, arg, CC_OWNER_MOVE)
         cv_field(flow, "call_reads", old_reads)
+        # Срез из reader-функции владельца удерживает его до конца блока,
+        # а не только на время вызова.
+        let borrow: i64 = cv_get(expr, cv_text("owner_slice_borrow"), 0)
+        if borrow != 0: cv_add_set(cv_getkey(flow, "slice_borrows"), cv_i(borrow))
         if cc_is_owned(typ) and not cv_name(cv_getkey(expr, "kindt"), "ctor"):
             cc_owned_temporary(flow, expr)
         return
@@ -216,6 +226,8 @@ unsafe fn cc_owned_block(flow: i64, body: i64, moved: i64, entry: i64) -> bool:
     let frame: i64 = cv_list()
     let pinned: i64 = cv_getkey(flow, "pinned")
     let pin_count: i64 = cv_len(pinned)
+    let borrows: i64 = cv_getkey(flow, "slice_borrows")
+    let borrow_count: i64 = cv_len(borrows)
     cv_push(frames, frame)
     if cv_len(frames) == 1:
         let slots: i64 = cv_getkey(cv_getkey(flow, "sem"), "slots")
@@ -233,6 +245,7 @@ unsafe fn cc_owned_block(flow: i64, body: i64, moved: i64, entry: i64) -> bool:
             break
     for i in 0..cv_len(frame): cv_remove(moved, cv_i(cv_at(frame, i)))
     while cv_len(pinned) > pin_count: cv_pop(pinned)
+    while cv_len(borrows) > borrow_count: cv_pop(borrows)
     cv_pop(frames)
     if cv_len(frame) != 0: cv_set(cv_getkey(flow, "scopes"), cv_i(body), frame)
     return falls_through
