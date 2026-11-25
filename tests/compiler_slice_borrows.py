@@ -411,6 +411,77 @@ print(len(result))
         self.assert_rejected("unsafe native fn bad(input: []i64) -> []i64 from input:\n{\n}\n",
                              "slice не поддерживается в native/extern ABI")
 
+    def test_temporary_slice_argument_releases_owner_after_statement(self):
+        self.assert_runs('''fn fill(view: []mut i64):
+    view[0] = 7
+
+fn show(view: []i64) -> i64:
+    return view[0]
+
+let values = [1, 2]
+fill(mut values[0..2])
+values[0] += 1
+fill(mut values[0..2])
+print(show(values[0..2]), values[0], values[1])
+values[1] = 9
+print(show(values[0..2]))
+''', "7 7 2\n7\n")
+
+    def test_temporary_read_reslice_argument_unfreezes_after_statement(self):
+        self.assert_runs('''fn sum(got: []i64) -> i64:
+    let total = 0
+    for i in 0..len(got):
+        total += got[i]
+    return total
+
+let data = [10, 20, 30]
+let buf = mut data[0..3]
+buf[0] = 1
+print(sum(buf[0..3]))
+buf[0] = 99
+print(sum(buf[0..2]), buf[0])
+''', "51\n119 99\n")
+
+    def test_temporary_slice_argument_keeps_statement_and_defer_rules(self):
+        # A named slice still holds its loan to the end of the block.
+        self.assert_rejected('''fn fill(view: []mut i64):
+    view[0] = 7
+
+let values = [1, 2]
+let view = mut values[0..1]
+fill(mut values[0..1])
+''', "заимствован изменяемым slice")
+        # A defer still holds a temporary slice loan until the block exits.
+        self.assert_rejected('''fn fill(view: []mut i64):
+    view[0] = 7
+
+let values = [1]
+defer fill(mut values[0..1])
+values[0] = 3
+''', "заимствован изменяемым slice")
+        # Two mutable slices of one array in a single call still conflict.
+        self.assert_rejected('''fn both(first: []mut i64, second: []mut i64):
+    first[0] = second[0]
+
+let values = [1, 2]
+both(mut values[0..1], mut values[1..2])
+''', "заимствован изменяемым slice")
+        # A mutable argument still excludes reading the array in the same call.
+        self.assert_rejected('''fn fill_read(view: []mut i64, x: i64):
+    view[0] = x
+
+let values = [1, 2]
+fill_read(mut values[0..1], values[0])
+''', "заимствован изменяемым slice")
+        # The loan still covers the rest of the statement's expression.
+        self.assert_rejected('''fn change(view: []mut i64) -> i64:
+    view[0] = 2
+    return 0
+
+let values = [1]
+print(values[change(mut values[0..1])])
+''', "заимствован изменяемым slice")
+
 
 if __name__ == "__main__":
     unittest.main()

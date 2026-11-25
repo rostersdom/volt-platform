@@ -33,6 +33,8 @@ unsafe fn ccs_new(v_progs: i64, v_entry_name: i64) -> i64:
     cv_field(v_self, "unsafe_depth", 3)
     cv_field(v_self, "borrowed_slots", cv_vector(CV_SET))
     cv_field(v_self, "frozen_mut_slots", cv_vector(CV_SET))
+    cv_field(v_self, "temp_slice_releases", cv_vector(CV_LIST))
+    cv_field(v_self, "defer_action_depth", 0)
     cv_field(v_self, "buffer_borrow_file", cc_path_join(cc_std, cv_text("borrow_buffer.volt")))
     cv_field(v_self, "owned_buffer_file", cc_path_join(cc_std, cv_text("owned_buffer.volt")))
     cv_field(v_self, "fs_file", cc_path_join(cc_std, cv_text("fs.volt")))
@@ -1616,6 +1618,8 @@ unsafe fn ccs_setup_fn(v_self: i64, v_fn: i64) -> i64:
     cv_field(v_self, "borrowed_slots", cv_vector(CV_SET))
     cv_field(v_self, "exclusive_slots", cv_vector(CV_SET))
     cv_field(v_self, "frozen_mut_slots", cv_vector(CV_SET))
+    cv_field(v_self, "temp_slice_releases", cv_vector(CV_LIST))
+    cv_field(v_self, "defer_action_depth", 0)
     let items_7: i64 = cv_vector(CV_LIST)
     cv_field(v_fn, "loop_stack", items_7)
     return 0
@@ -1820,8 +1824,15 @@ unsafe fn ccs_tf(v_self: i64, v_e: i64, v_expected: i64) -> i64:
         if cv_classes(v_expected, "TWrapper") or cv_classes(v_expected, "TStruct"):
             cv_field(v_e, "context_type", v_expected)
     if cv_classes(v_e, "Call"): ccs_buffer_check_call(v_self, v_e)
+    let v_loan_mark: i64 = 0
+    let v_freeze_mark: i64 = 0
+    if cv_classes(v_e, "Call"):
+        v_loan_mark = cv_len(cv_getkey(v_self, "borrowed_slots"))
+        v_freeze_mark = cv_len(cv_getkey(v_self, "frozen_mut_slots"))
     let v_t: i64 = ccs_typeof(v_self, v_e)
-    if cv_classes(v_e, "Call"): ccs_check_mut_slice_args(v_self, v_e)
+    if cv_classes(v_e, "Call"):
+        ccs_check_mut_slice_args(v_self, v_e)
+        ccs_note_temp_slice_args(v_self, v_e, v_loan_mark, v_freeze_mark)
     if cv_classes(v_e, "Cast"):
         let v_x: i64 = cv_getkey(v_e, "x")
         ccs_check_buffer_cast(v_self, cv_getkey(v_x, "type"), v_t, v_x)
@@ -2187,7 +2198,9 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
             return 0
         if cv_classes(v_bt, "TArray"):
             ccs_check_exclusive_owner(v_self, v_base)
-            # shortcut: even temporary slices reserve the owner until block exit, pending expression lifetimes.
+            # The owner stays reserved until block exit; ccs_note_temp_slice_args
+            # shortens the loan to the end of the statement when this slice is a
+            # temporary argument of a call that does not return the borrow.
             let v_borrowed: i64 = cv_getkey(v_self, "borrowed_slots")
             if cv_truth(v_mutable):
                 if cv_contains(v_borrowed, v_owner):
@@ -2438,6 +2451,46 @@ unsafe fn ccs_check_mut_slice_args(v_self: i64, v_e: i64):
         for j in 0..i:
             if cv_getkey(cv_at(v_args, j), "slot") == v_slot:
                 cc_error(cv_text("изменяемый slice нельзя передать дважды в один вызов"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
+
+unsafe fn ccs_note_temp_slice_args(v_self: i64, v_e: i64, v_loan_mark: i64, v_freeze_mark: i64):
+    # A slice expression written directly in argument position borrows its owner
+    # only until the end of the enclosing statement; a named slice keeps the
+    # loan until block exit, and a `from` result inherits the argument's loan.
+    # Loans created while checking a defer action are excluded: defer holds
+    # them until the block exits, as before.
+    if cv_getkey(v_self, "defer_action_depth") != 0: return
+    let v_result_origin: i64 = cv_get(v_e, cv_text("slice_origin"), 0)
+    let v_borrowed: i64 = cv_getkey(v_self, "borrowed_slots")
+    let v_frozen: i64 = cv_getkey(v_self, "frozen_mut_slots")
+    let v_pending: i64 = cv_getkey(v_self, "temp_slice_releases")
+    let v_args: i64 = cv_getkey(v_e, "args")
+    for index_1 in 0..cv_len(v_args):
+        let v_arg: i64 = cv_at(v_args, index_1)
+        if not cv_classes(v_arg, "SliceExpr"): continue
+        let v_owner: i64 = cv_get(v_arg, cv_text("slice_origin"), 0)
+        if v_owner == 0: continue
+        if v_result_origin != 0 and cv_equal(v_result_origin, v_owner): continue
+        let v_base: i64 = cv_getkey(v_arg, "base")
+        let v_bt: i64 = cv_get(v_base, cv_text("type"), 0)
+        if cv_classes(v_bt, "TArray"):
+            # Only a loan that this call introduced may end with the statement.
+            if v_loan_mark <= cv_pos(v_borrowed, v_owner):
+                cv_push(v_pending, cv_pair(v_borrowed, v_owner))
+                if cv_truth(cv_getkey(v_arg, "mutable")):
+                    cv_push(v_pending, cv_pair(cv_getkey(v_self, "exclusive_slots"), v_owner))
+        elif cv_classes(v_bt, "TSlice") and cc_is_mut_slice(v_bt) and cv_classes(v_base, "VarRef"):
+            let v_slot: i64 = cv_getkey(v_base, "slot")
+            if v_freeze_mark <= cv_pos(v_frozen, v_slot):
+                cv_push(v_pending, cv_pair(v_frozen, v_slot))
+    return
+
+unsafe fn ccs_apply_temp_slice_releases(v_self: i64):
+    let v_pending: i64 = cv_getkey(v_self, "temp_slice_releases")
+    for index_1 in 0..cv_len(v_pending):
+        let v_entry: i64 = cv_at(v_pending, index_1)
+        cv_remove(cv_at(v_entry, 0), cv_at(v_entry, 1))
+    while cv_len(v_pending) > 0: cv_pop(v_pending)
+    return
 
 unsafe fn ccs_slice_origin(v_e: i64) -> i64:
     if cv_classes(v_e, "VarRef"):
@@ -3143,6 +3196,8 @@ unsafe fn ccs_typecheck_stmts(v_self: i64, v_stmts: i64) -> i64:
         if cv_classes(v_st, "LetStmt") or cv_classes(v_st, "ConstStmt"):
             cv_remove(cv_getkey(v_self, "future_local_names"), cv_getkey(v_st, "name"))
         ccs_typecheck_st(v_self, v_st)
+        # Temporary slice arguments of this statement's calls end their loans here.
+        ccs_apply_temp_slice_releases(v_self)
     # Deferred owner accesses also see loans introduced after their registration.
     for i in 0..cv_len(v_frame):
         let v_defer: i64 = cv_at(v_frame, i)
@@ -3194,7 +3249,11 @@ unsafe fn ccs_typecheck_defer_action(v_self: i64, v_st: i64) -> i64:
     if not (cv_classes(v_st, "AssignStmt") or cv_classes(v_st, "ExprStmt")):
         cc_error(cv_text("defer допускает только простой оператор без flow-control или вложенного defer"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
         return 0
+    # Loans created by the deferred action stay until block exit, so temporary
+    # slice arguments inside it must not be scheduled for statement-end release.
+    cv_field(v_self, "defer_action_depth", cv_getkey(v_self, "defer_action_depth") + 1)
     ccs_typecheck_st(v_self, v_st)
+    cv_field(v_self, "defer_action_depth", cv_getkey(v_self, "defer_action_depth") - 1)
     return 0
 
 unsafe fn ccs_validate_defer_reads(v_self: i64, v_defer: i64) -> i64:
