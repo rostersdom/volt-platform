@@ -1702,6 +1702,15 @@ print(run())
         result = self.compile_run('let a: u8 = 255\nlet b: i8 = -128\nprint(a, b)\n')
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "255 -128\n", ""))
 
+    def test_malformed_number_literals_are_lexer_errors(self):
+        # 0b12 / 0x1g / 123abc used to split into two tokens and fail with an
+        # opaque parser error ("ожидалось ')', найдено '2'").
+        self.assert_compile_error('print(0b12)\n', "некорректное число: цифра вне основания литерала")
+        self.assert_compile_error('print(0x1g)\n', "некорректное число: буква сразу после цифр")
+        self.assert_compile_error('print(123abc)\n', "некорректное число: буква сразу после цифр")
+        result = self.compile_run('print(0x1f, 0b101, 1_000_000)\n')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "31 5 1000000\n", ""))
+
     def test_deep_expressions_fail_cleanly_instead_of_crashing(self):        # 5000 nested parentheses used to overflow the parser stack (segfault).
         parens = 'print(' + '(' * 5000 + '1' + ')' * 5000 + ')\n'
         self.assert_compile_error(parens, "слишком глубокая вложенность выражения")

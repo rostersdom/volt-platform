@@ -145,6 +145,10 @@ unsafe fn cc_lex(source: i64, file: i64) -> i64:
                     if p[pos] == '+' or p[pos] == '-': pos += 1
                     if not cc_lex_digit(p[pos]): cc_error_at(cv_text("в экспоненте ожидаются цифры"), file, cv_i(line), pos - begin + 1)
                     while cc_lex_digit(p[pos]): pos += 1
+            if base != 10 and cc_lex_digit(p[pos]):
+                cc_error_at(cv_text("некорректное число: цифра вне основания литерала"), file, cv_i(line), pos - begin + 1)
+            if cc_lex_letter(p[pos]):
+                cc_error_at(cv_text("некорректное число: буква сразу после цифр"), file, cv_i(line), pos - begin + 1)
             let number: ptr<char> = cv_alloc(pos - start + 1)
             let count: i64 = 0
             for i in start..pos:
