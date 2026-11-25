@@ -364,6 +364,14 @@ unsafe fn ccp_next(v_self: i64) -> i64:
     cv_field(v_self, "i", cv_add(cv_getkey(v_self, "i"), 11))
     return v_t
 
+# Parser diagnostic with the token's 1-based byte column when the lexer
+# recorded one (indent == token start); falls back to line-only otherwise.
+unsafe fn ccp_error(v_self: i64, v_msg: i64, v_tok: i64):
+    let v_column: i64 = 0
+    let v_ind: i64 = cv_subscript(v_tok, cv_text("ind"))
+    if not cv_less(v_ind, 3): v_column = cv_index(v_ind) + 1
+    cc_error_at(v_msg, cv_getkey(v_self, "file"), cv_subscript(v_tok, cv_text("line")), v_column)
+
 unsafe fn ccp_expect(v_self: i64, v_kind: i64, v_txt: i64) -> i64:
     let v_t: i64 = 0
     let v_want: i64 = 0
@@ -380,7 +388,7 @@ unsafe fn ccp_expect(v_self: i64, v_kind: i64, v_txt: i64) -> i64:
         cv_push(pieces_2, cv_format(v_want, "r"))
         cv_push(pieces_2, cv_text(", найдено "))
         cv_push(pieces_2, cv_format(cv_subscript(v_t, cv_text("t")), "r"))
-        cc_error(cv_join(cv_text(""), pieces_2), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+        ccp_error(v_self, cv_join(cv_text(""), pieces_2), v_t)
         return 0
     return v_t
 
@@ -389,7 +397,7 @@ unsafe fn ccp_line_end(v_self: i64) -> i64:
     v_t = ccp_peek(v_self)
     let subject_1: i64 = cv_subscript(v_t, cv_text("k"))
     if (not ((cv_equal(subject_1, cv_text("nl")) or cv_equal(subject_1, cv_text("eof"))))):
-        cc_error(cv_cat(cv_text("лишний текст после оператора: "), cv_format(cv_subscript(v_t, cv_text("t")), "r")), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+        ccp_error(v_self, cv_cat(cv_text("лишний текст после оператора: "), cv_format(cv_subscript(v_t, cv_text("t")), "r")), v_t)
         return 0
     if (cv_equal(cv_subscript(v_t, cv_text("k")), cv_text("nl"))):
         cv_field(v_self, "i", cv_add(cv_getkey(v_self, "i"), 11))
@@ -489,7 +497,7 @@ unsafe fn ccp_parse_struct(v_self: i64) -> i64:
         cv_push(pieces_1, cv_text("struct "))
         cv_push(pieces_1, cv_format(v_name, ""))
         cv_push(pieces_1, cv_text(": ожидается поле с отступом"))
-        cc_error(cv_join(cv_text(""), pieces_1), cv_getkey(v_self, "file"), cv_subscript(v_kw, cv_text("line")))
+        ccp_error(v_self, cv_join(cv_text(""), pieces_1), v_kw)
         return 0
     v_base = cv_subscript(v_pe, cv_text("ind"))
     let items_2: i64 = cv_vector(CV_LIST)
@@ -508,7 +516,7 @@ unsafe fn ccp_parse_struct(v_self: i64) -> i64:
         cv_push(pieces_3, cv_text("struct "))
         cv_push(pieces_3, cv_format(v_name, ""))
         cv_push(pieces_3, cv_text(": нет полей"))
-        cc_error(cv_join(cv_text(""), pieces_3), cv_getkey(v_self, "file"), cv_subscript(v_kw, cv_text("line")))
+        ccp_error(v_self, cv_join(cv_text(""), pieces_3), v_kw)
         return 0
     return cc_StructDef(cv_getkey(v_self, "file"), v_name, v_fields, cv_subscript(v_kw, cv_text("line")), v_type_params)
 
@@ -527,7 +535,7 @@ unsafe fn ccp_parse_type_params(v_self: i64, v_eq_params: i64) -> i64:
                 cv_push(pieces_2, cv_text("параметр типа "))
                 cv_push(pieces_2, cv_format(v_name, ""))
                 cv_push(pieces_2, cv_text(" указан дважды"))
-                cc_error(cv_join(cv_text(""), pieces_2), cv_getkey(v_self, "file"), cv_subscript(v_param, cv_text("line")))
+                ccp_error(v_self, cv_join(cv_text(""), pieces_2), v_param)
                 return 0
             cv_push(v_params, v_name)
             if cv_truth(ccp_atp(v_self, cv_text(":"))):
@@ -572,7 +580,7 @@ unsafe fn ccp_parse_enum(v_self: i64, v_header: i64) -> i64:
         cv_push(pieces_1, cv_text("enum "))
         cv_push(pieces_1, cv_format(v_name, ""))
         cv_push(pieces_1, cv_text(": ожидается вариант с отступом"))
-        cc_error(cv_join(cv_text(""), pieces_1), cv_getkey(v_self, "file"), cv_subscript(v_kw, cv_text("line")))
+        ccp_error(v_self, cv_join(cv_text(""), pieces_1), v_kw)
         return 0
     v_base = cv_subscript(v_pe, cv_text("ind"))
     let items_2: i64 = cv_vector(CV_LIST)
@@ -588,7 +596,7 @@ unsafe fn ccp_parse_enum(v_self: i64, v_header: i64) -> i64:
             cv_push(pieces_3, cv_text("enum "))
             cv_push(pieces_3, cv_format(v_name, ""))
             cv_push(pieces_3, cv_text(": ожидается имя варианта"))
-            cc_error(cv_join(cv_text(""), pieces_3), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+            ccp_error(v_self, cv_join(cv_text(""), pieces_3), v_t)
             return 0
         v_variant = ccp_next(v_self)
         v_variant_name = cv_subscript(v_variant, cv_text("t"))
@@ -599,7 +607,7 @@ unsafe fn ccp_parse_enum(v_self: i64, v_header: i64) -> i64:
             cv_push(pieces_4, cv_text(": вариант "))
             cv_push(pieces_4, cv_format(v_variant_name, ""))
             cv_push(pieces_4, cv_text(" определён дважды"))
-            cc_error(cv_join(cv_text(""), pieces_4), cv_getkey(v_self, "file"), cv_subscript(v_variant, cv_text("line")))
+            ccp_error(v_self, cv_join(cv_text(""), pieces_4), v_variant)
             return 0
         cv_add_set(v_names, v_variant_name)
         let payload: i64 = 0
@@ -620,7 +628,7 @@ unsafe fn ccp_parse_enum(v_self: i64, v_header: i64) -> i64:
                 cv_push(pieces_5, cv_text("enum "))
                 cv_push(pieces_5, cv_format(v_name, ""))
                 cv_push(pieces_5, cv_text(": значение варианта должно быть целым"))
-                cc_error(cv_join(cv_text(""), pieces_5), cv_getkey(v_self, "file"), cv_subscript(v_value_tok, cv_text("line")))
+                ccp_error(v_self, cv_join(cv_text(""), pieces_5), v_value_tok)
                 return 0
             v_text = cv_subscript(v_value_tok, cv_text("t"))
             if cv_truth(cv_bool(cv_starts(v_text, cv_pair(cv_text("0x"), cv_text("0X"))))):
@@ -637,7 +645,7 @@ unsafe fn ccp_parse_enum(v_self: i64, v_header: i64) -> i64:
             cv_push(pieces_6, cv_text("enum "))
             cv_push(pieces_6, cv_format(v_name, ""))
             cv_push(pieces_6, cv_text(": значение вне диапазона i64"))
-            cc_error(cv_join(cv_text(""), pieces_6), cv_getkey(v_self, "file"), cv_subscript(v_variant, cv_text("line")))
+            ccp_error(v_self, cv_join(cv_text(""), pieces_6), v_variant)
             return 0
         ccp_line_end(v_self)
         let variant: i64 = cv_pair(v_variant_name, v_value)
@@ -649,7 +657,7 @@ unsafe fn ccp_parse_enum(v_self: i64, v_header: i64) -> i64:
         cv_push(pieces_7, cv_text("enum "))
         cv_push(pieces_7, cv_format(v_name, ""))
         cv_push(pieces_7, cv_text(": нет вариантов"))
-        cc_error(cv_join(cv_text(""), pieces_7), cv_getkey(v_self, "file"), cv_subscript(v_kw, cv_text("line")))
+        ccp_error(v_self, cv_join(cv_text(""), pieces_7), v_kw)
         return 0
     return cc_EnumDef(cv_getkey(v_self, "file"), v_name, v_variants, cv_subscript(v_kw, cv_text("line")))
 
@@ -723,10 +731,10 @@ unsafe fn ccp_parse_fn(v_self: i64, v_head_ind: i64) -> i64:
                 let subject_4: i64 = cv_lower(cv_subscript(v_parts, 3))
                 logic_5 = ((cv_equal(subject_4, cv_text("ret")) or cv_equal(subject_4, cv_text("retw")) or cv_equal(subject_4, cv_text("retl")) or cv_equal(subject_4, cv_text("retq")) or cv_equal(subject_4, cv_text("retn")) or cv_equal(subject_4, cv_text("retf")) or cv_equal(subject_4, cv_text("lret")) or cv_equal(subject_4, cv_text("lretw")) or cv_equal(subject_4, cv_text("lretl")) or cv_equal(subject_4, cv_text("lretq")) or cv_equal(subject_4, cv_text("iret")) or cv_equal(subject_4, cv_text("iretw")) or cv_equal(subject_4, cv_text("iretd")) or cv_equal(subject_4, cv_text("iretq"))))
             if (logic_5):
-                cc_error(cv_text("native-тело не должно содержать ret: эпилог добавляет компилятор"), cv_getkey(v_self, "file"), cv_subscript(v_kw, cv_text("line")))
+                ccp_error(v_self, cv_text("native-тело не должно содержать ret: эпилог добавляет компилятор"), v_kw)
                 return 0
         if cv_truth(v_type_params):
-            cc_error(cv_text("generic-функции пока не поддерживают native/extern ABI"), cv_getkey(v_self, "file"), cv_subscript(v_kw, cv_text("line")))
+            ccp_error(v_self, cv_text("generic-функции пока не поддерживают native/extern ABI"), v_kw)
             return 0
         let extra_6: i64 = cv_tuple()
         cv_push(extra_6, CV_TRUE)
@@ -738,7 +746,7 @@ unsafe fn ccp_parse_fn(v_self: i64, v_head_ind: i64) -> i64:
         return v_fn
     if cv_truth(v_is_extern):
         if cv_truth(v_type_params):
-            cc_error(cv_text("generic-функции пока не поддерживают native/extern ABI"), cv_getkey(v_self, "file"), cv_subscript(v_kw, cv_text("line")))
+            ccp_error(v_self, cv_text("generic-функции пока не поддерживают native/extern ABI"), v_kw)
             return 0
         ccp_line_end(v_self)
         let extra_7: i64 = cv_tuple()
@@ -828,7 +836,7 @@ unsafe fn ccp_parse_block(v_self: i64, v_parent_ind: i64) -> i64:
         return items_1
     v_base = cv_subscript(v_t, cv_text("ind"))
     if (cv_le(v_base, v_parent_ind)):
-        cc_error(cv_text("тело блока должно иметь отступ больше заголовка"), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+        ccp_error(v_self, cv_text("тело блока должно иметь отступ больше заголовка"), v_t)
         return 0
     let items_2: i64 = cv_vector(CV_LIST)
     v_stmts = items_2
@@ -842,7 +850,7 @@ unsafe fn ccp_parse_block(v_self: i64, v_parent_ind: i64) -> i64:
         if (cv_less(cv_subscript(v_t, cv_text("ind")), v_base)):
             break
         if (cv_less(v_base, cv_subscript(v_t, cv_text("ind")))):
-            cc_error(cv_text("несогласованный отступ в блоке"), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+            ccp_error(v_self, cv_text("несогласованный отступ в блоке"), v_t)
             return 0
         cv_push(v_stmts, ccp_parse_stmt(v_self))
     return v_stmts
@@ -869,7 +877,7 @@ unsafe fn ccp_parse_stmt(v_self: i64) -> i64:
             ccp_next(v_self)
             v_action = ccp_parse_stmt(v_self)
             if cv_classes(v_action, "DeferStmt") or cv_classes(v_action, "ReturnStmt") or cv_classes(v_action, "BreakStmt") or cv_classes(v_action, "ContinueStmt") or cv_classes(v_action, "IfStmt") or cv_classes(v_action, "WhileStmt") or cv_classes(v_action, "ForStmt") or cv_classes(v_action, "UnsafeStmt") or cv_classes(v_action, "LetStmt") or cv_classes(v_action, "ConstStmt"):
-                cc_error(cv_text("defer допускает только простой оператор без flow-control или вложенного defer"), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+                ccp_error(v_self, cv_text("defer допускает только простой оператор без flow-control или вложенного defer"), v_t)
                 return 0
             return cc_DeferStmt(v_action, cv_subscript(v_t, cv_text("line")))
         if (cv_equal(v_kw, cv_text("return"))):
@@ -899,7 +907,7 @@ unsafe fn ccp_parse_stmt(v_self: i64) -> i64:
             ccp_expect(v_self, cv_text("punct"), cv_text(":"))
             v_body = ccp_block_or_inline(v_self, cv_subscript(v_t, cv_text("line")), cv_subscript(v_t, cv_text("ind")))
             if not (cv_truth(v_body)):
-                cc_error(cv_text("пустой unsafe-блок"), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+                ccp_error(v_self, cv_text("пустой unsafe-блок"), v_t)
                 return 0
             return cc_UnsafeStmt(v_body, cv_subscript(v_t, cv_text("line")))
     v_e = ccp_parse_expr(v_self)
@@ -983,7 +991,7 @@ unsafe fn ccp_parse_match(v_self: i64) -> i64:
         v_p = ccp_next(v_self)
         let subject_3: i64 = cv_subscript(v_p, cv_text("k"))
         if (not ((cv_equal(subject_3, cv_text("id")) or cv_equal(subject_3, cv_text("kw"))))):
-            cc_error(cv_cat(cv_text("ожидался вариант, Some(x)/Ok(x)/Err(x) или _, найдено "), cv_format(cv_subscript(v_p, cv_text("t")), "r")), cv_getkey(v_self, "file"), cv_subscript(v_p, cv_text("line")))
+            ccp_error(v_self, cv_cat(cv_text("ожидался вариант, Some(x)/Ok(x)/Err(x) или _, найдено "), cv_format(cv_subscript(v_p, cv_text("t")), "r")), v_p)
             return 0
         v_pattern = cv_subscript(v_p, cv_text("t"))
         v_binding = 0
@@ -1001,7 +1009,7 @@ unsafe fn ccp_parse_match(v_self: i64) -> i64:
         cv_push(v_arms, cc_MatchArm(v_pattern, v_binding, v_body, cv_subscript(v_p, cv_text("line"))))
         ccp_skip_nl(v_self)
     if not (cv_truth(v_arms)):
-        cc_error(cv_text("match требует хотя бы один arm"), cv_getkey(v_self, "file"), cv_subscript(v_kw, cv_text("line")))
+        ccp_error(v_self, cv_text("match требует хотя бы один arm"), v_kw)
         return 0
     return cc_MatchStmt(v_value, v_arms, cv_subscript(v_kw, cv_text("line")))
 
@@ -1093,7 +1101,7 @@ unsafe fn ccp_parse_type(v_self: i64, v_in_cast: i64, v_nesting: i64) -> i64:
     let v_args: i64 = 0
     v_t = ccp_peek(v_self)
     if (cv_le(515, v_nesting)):
-        cc_error(cv_text("превышена глубина вложенности типов"), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+        ccp_error(v_self, cv_text("превышена глубина вложенности типов"), v_t)
         return 0
     if cv_truth(ccp_atp(v_self, cv_text("["))):
         ccp_next(v_self)
@@ -1192,7 +1200,7 @@ unsafe fn ccp_expect_gt(v_self: i64) -> i64:
         cv_set(dict_3, cv_text("ind"), cv_add(cv_subscript(v_t, cv_text("ind")), 11))
         cv_set(cv_getkey(v_self, "toks"), cv_getkey(v_self, "i"), dict_3)
         return 0
-    cc_error(cv_cat(cv_text("ожидалось '>', найдено "), cv_format(cv_subscript(v_t, cv_text("t")), "r")), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+    ccp_error(v_self, cv_cat(cv_text("ожидалось '>', найдено "), cv_format(cv_subscript(v_t, cv_text("t")), "r")), v_t)
     return 0
 
 unsafe fn ccp_parse_expr(v_self: i64) -> i64:
@@ -1311,7 +1319,7 @@ unsafe fn ccp_parse_unary(v_self: i64) -> i64:
     # through here; bound the recursion so a hostile source cannot overflow
     # the compiler stack.
     if cv_less(cv_i(512), cv_getkey(v_self, "expr_depth")):
-        cc_error(cv_text("слишком глубокая вложенность выражения"), cv_getkey(v_self, "file"), cv_subscript(ccp_peek(v_self), cv_text("line")))
+        ccp_error(v_self, cv_text("слишком глубокая вложенность выражения"), ccp_peek(v_self))
     cv_field(v_self, "expr_depth", cv_add(cv_getkey(v_self, "expr_depth"), 11))
     defer cv_field(v_self, "expr_depth", cv_sub(cv_getkey(v_self, "expr_depth"), 11))
     let v_t: i64 = 0
@@ -1443,7 +1451,7 @@ unsafe fn ccp_parse_primary(v_self: i64) -> i64:
             ccp_expect(v_self, cv_text("punct"), cv_text(")"))
             cv_field(v_self, "depth", cv_sub(cv_getkey(v_self, "depth"), 11))
             return cc_SizeAlignExpr(cv_subscript(v_t, cv_text("t")), v_typ, cv_subscript(v_t, cv_text("line")))
-        cc_error(cv_cat(cv_text("неожиданное ключевое слово "), cv_format(cv_subscript(v_t, cv_text("t")), "r")), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+        ccp_error(v_self, cv_cat(cv_text("неожиданное ключевое слово "), cv_format(cv_subscript(v_t, cv_text("t")), "r")), v_t)
         return 0
     if (cv_equal(cv_subscript(v_t, cv_text("k")), cv_text("id"))):
         if (cv_equal(cv_subscript(v_t, cv_text("t")), cv_text("None"))):
@@ -1474,5 +1482,5 @@ unsafe fn ccp_parse_primary(v_self: i64) -> i64:
         ccp_expect(v_self, cv_text("punct"), cv_text("]"))
         cv_field(v_self, "depth", cv_sub(cv_getkey(v_self, "depth"), 11))
         return cc_ArrayLit(v_items, cv_subscript(v_t, cv_text("line")))
-    cc_error(cv_cat(cv_text("неожиданный токен "), cv_format(cv_subscript(v_t, cv_text("t")), "r")), cv_getkey(v_self, "file"), cv_subscript(v_t, cv_text("line")))
+    ccp_error(v_self, cv_cat(cv_text("неожиданный токен "), cv_format(cv_subscript(v_t, cv_text("t")), "r")), v_t)
     return 0
