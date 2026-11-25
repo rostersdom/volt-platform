@@ -30,7 +30,7 @@ SUITES = (
     "compiler_lifetimes", "compiler_buffer_borrow", "compiler_manifest",
     "compiler_sum_types", "compiler_modules", "compiler_ownership", "compiler_slice_borrows",
     "compiler_eq_constraint", "compiler_c_struct", "vstd_text_view",
-    "compiler_debug", "compiler_fuzz", "vstd_io", "vstd_arena", "vstd_threads", "vstd_channel",
+    "compiler_debug", "compiler_fuzz", "vstd_io", "vstd_fs", "vstd_arena", "vstd_threads", "vstd_channel",
     "http_integration", "sdl_integration",
     "browser_navigation", "browser_navigation_controller", "browser_https",
     "browser_launch", "volt_launcher_integration", "browser_javascript", "browser_visual", "browser_media",

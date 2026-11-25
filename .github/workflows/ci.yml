@@ -26,6 +26,7 @@ jobs:
           --require compiler_slice_borrows
           --require abi_integration
           --require vstd_io
+          --require vstd_fs
 
   # Browser suites are a separate group: python3 tests/run_all.py --group browser
   #
