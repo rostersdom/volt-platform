@@ -272,12 +272,15 @@ unsafe fn cc_allowed_payload(typ: i64) -> bool:
     return cv_truth(cc_isscalar(typ)) or cv_classes(typ, "TStruct") or cc_is_tagged_value(typ)
 
 unsafe fn ccs_wrapper_type(v_self: i64, name: i64, args: i64, file: i64, line: i64, indirect: i64) -> i64:
+    let owned_ok: bool = cv_name(name, "Result") and cc_is_owned_buffer(cv_at(args, 0))
     for i in 0..cv_len(args):
         let payload: i64 = cv_at(args, i)
+        if owned_ok and i == 0: continue
         if not cc_allowed_payload(payload):
             cc_error(cv_mod(cv_text("%s: недопустимый тип payload %s"), cv_pair(name, cc_display(payload))), file, line)
             return 0
     let typ: i64 = cc_TWrapper(name, args)
+    if owned_ok: cv_field(typ, "owned_ok", CV_TRUE)
     if cv_less(cv_i(64), cc_type_depth(typ)):
         cc_error(cv_text("Option/Result: превышена глубина вложенности типов"), file, line)
         return 0
@@ -294,7 +297,7 @@ unsafe fn ccs_wrapper_layout(v_self: i64, typ: i64, file: i64, line: i64):
             ccs_wrapper_layout(v_self, payload, file, line)
         elif cv_classes(payload, "TStruct"):
             ccs_ensure_layout(v_self, payload)
-            if not ccs_copyable_struct_payload(v_self, payload):
+            if not (cc_is_owned_result(typ) and i == 0) and not ccs_copyable_struct_payload(v_self, payload):
                 cc_error(cv_text("payload Option/Result требует копируемую struct без slice, BorrowBuffer и OwnedBuffer"), file, line)
     cc_sum_layout(typ, args, file, line)
 
@@ -1825,7 +1828,7 @@ unsafe fn ccs_tf(v_self: i64, v_e: i64, v_expected: i64) -> i64:
     cv_field(v_e, "type", v_t)
     if cv_classes(v_t, "TTaggedEnum") and (cv_classes(v_e, "Call") or cc_is_sum_ctor(v_e)):
         cv_field(v_e, "temp_slot", ccs_declare_temp(v_self, v_t, cv_getkey(v_e, "line")))
-    elif cv_classes(v_e, "Call") and cv_classes(v_t, "TWrapper") and cv_less(cv_i(16), cc_type_size(v_t)):
+    elif cv_classes(v_e, "Call") and cv_classes(v_t, "TWrapper") and (cc_is_owned_result(v_t) or cv_less(cv_i(16), cc_type_size(v_t))):
         cv_field(v_e, "temp_slot", ccs_declare_temp(v_self, v_t, cv_getkey(v_e, "line")))
     return v_t
 
@@ -2603,7 +2606,8 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                 if cv_name(v_name, "Ok"): v_expected = cv_at(args, 0)
                 if cv_name(v_name, "Err"): v_expected = cv_at(args, 1)
         v_payload = ccs_tf(v_self, cv_at(cv_getkey(v_e, "args"), 0), v_expected)
-        if not cc_allowed_payload(v_payload):
+        let owned_ok: bool = cv_name(v_name, "Ok") and cc_is_owned_result(v_hint) and cv_equal(v_payload, v_expected)
+        if not owned_ok and not cc_allowed_payload(v_payload):
             let pieces_8: i64 = cv_list()
             cv_push(pieces_8, cv_format(v_name, ""))
             cv_push(pieces_8, cv_text(": недопустимый тип payload "))

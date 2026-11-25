@@ -35,6 +35,37 @@ show(buffer) # сначала печатает V, затем освобожда�
 аргументы-владельцы ещё принадлежат вызывающей функции. `panic` и `exit`
 не раскручивают стек и не запускают ни `defer`, ни `drop`.
 
-Первая версия не поддерживает частичный перенос, переприсваивание владельца,
-хранение в структурах, массивах и `Option`/`Result`, пользовательский `drop` и
-C ABI. Существующие `ByteBuffer`, `Buffer<T>` и `BorrowBuffer<T>` не меняются.
+## `Result<OwnedBuffer, E>`
+
+Если `E` — допустимый копируемый тип ошибки, `Ok(buffer)` переносит буфер в
+`Result<OwnedBuffer, E>`. Весь результат некопируемый, даже если в нём `Err`.
+Его можно перенести через `let`, аргумент или `return`. `match` и `?` потребляют
+весь результат: ветка `Ok(buffer)` или успешный `?` получает отдельного
+владельца, а `Err` обрабатывается как обычная копируемая ошибка. Использовать
+исходный результат после любого из этих переносов нельзя.
+
+```volt
+use fs, owned_buffer
+
+fn checked_buffer(path: string, text: string) -> Result<OwnedBuffer, fs.IoError>:
+    let info = fs.stat(path)?
+    return Ok(owned_buffer_new(text))
+
+fn forward(path: string) -> Result<OwnedBuffer, fs.IoError>:
+    let buffer = checked_buffer(path, "VOLT")?
+    return Ok(buffer)
+
+match forward("."):
+    Ok(buffer): defer print(owned_buffer_get(&buffer, 0) as char)
+    Err(error): print(fs.errno(error))
+```
+
+При очистке живого результата освобождается только активный `Ok`, после `defer`.
+Если `match` попал в `_`, не извлечённый буфер освобождается при выходе из этой
+ветки, также после её `defer`. Результат, отброшенный отдельным выражением,
+освобождается в конце этого выражения. Перенос не копирует байты самого буфера.
+
+Частичный перенос, переприсваивание владельца, хранение в структурах и массивах,
+`Option<OwnedBuffer>`, `OwnedBuffer` в `Err`, вложение владеющего `Result` в другие
+обёртки, пользовательский `drop` и C ABI не поддерживаются. Существующие
+`ByteBuffer`, `Buffer<T>` и `BorrowBuffer<T>` не меняются.

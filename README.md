@@ -389,18 +389,21 @@ requires at least one arm. Its patterns include `_`, `Enum.Variant`,
 variant must be covered exactly once; `_` covers the remaining variants and is
 last. Other types, overlapping
 patterns, guards, and structural destructuring are unsupported. Each binding
-is an immutable copy visible only in that arm. For `Option`/`Result`, match a
-local value, parameter, or function result rather than a direct constructor.
+is visible only in that arm. Copyable payloads are copied; `Ok` moves an owned
+buffer out of its result. For `Option`/`Result`, match a local value, parameter,
+or function result rather than a direct constructor.
 
 `Option<T>` has `None` or `Some(T)`. `Result<T,E>` has `Ok(T)` or `Err(E)`.
 Use an explicit type or sufficient context to determine both type arguments
 when a constructor alone is ambiguous. For example, `let r: Result<i64, i32> =
 Err(22 as i32)` has a payload of exactly `i32`. Payloads may be scalars, copyable
-structures, enums, or nested `Option`/`Result`, but not arrays or slices by value
-or move-only values. They can be local values, ordinary VOLT parameters, and results, but
-not globals, constants, fields, array elements, or zero-initialized bindings.
-Reassignment of a local or parameter copies the same tagged type after evaluating
-the right-hand side once; unused payload bytes are cleared.
+structures, enums, or copyable nested `Option`/`Result`, but not arrays or slices
+by value. [`Result<OwnedBuffer, E>`](docs/owned-buffer.md) is move-only with a
+copyable error type: `Ok` moves the buffer in, and `match` or `?` consumes the
+result. Tagged values can be locals, parameters, and results in ordinary VOLT
+functions, but not globals, constants, fields, array elements, or zero-initialized
+bindings. Only copyable tagged values can be reassigned; the right-hand side
+is evaluated once and must have the same type.
 
 The postfix `?` extracts the successful payload. `None` or `Err` returns from
 the enclosing ordinary VOLT function, running its registered `defer` actions and drops.
@@ -526,7 +529,7 @@ compile-time search paths. It does not download packages or run build scripts.
 | [`time`](vstd/time.volt) | `monotonic_ms() -> Result<i64, i32>` measures intervals, not wall time. |
 | [`fs`](vstd/fs.volt) | `file_size` returns the logical size, including holes. `create_dir` creates one directory, `rename_path` moves an entry without replacing the destination, and `remove_file`/`remove_dir` delete a file or symlink and an empty directory, respectively. These are synchronous Linux operations with positive `errno` in `Err`. |
 | [`process`](vstd/process.volt) | `argc`, `arg_at`, and the raw environment read the initial Linux stack. `arg_at` returns a borrowed string or `Err(22)` for an invalid index. `process_exec_wait` runs an executable without a shell. |
-| [`event`](vstd/event.volt) | `poll` checks multiple descriptors and writes `revents`; it is unsafe because it writes to the backing array of a read-only slice. `poll_readable` returns flags for one descriptor. The timeout is signed `i32` milliseconds (`-1` waits indefinitely, `0` checks without waiting). `poll` returns 0 on a timeout. Nonblocking monotonic `timerfd` supports one-shot and periodic timers via `timer_create`, `timer_set`, `timer_read`, and `timer_close`; `first_ms = 0` disarms, and a read without an expiration reports `Err(11)`. |
+| [`event`](vstd/event.volt) | `poll` takes `[]mut EventPollFd` and writes `revents` within that slice; the caller does not need `unsafe`. `poll_readable` returns flags for one descriptor. The timeout is signed `i32` milliseconds (`-1` waits indefinitely, `0` checks without waiting). `poll` returns 0 on a timeout. Nonblocking monotonic `timerfd` supports one-shot and periodic timers via `timer_create`, `timer_set`, `timer_read`, and `timer_close`; `first_ms = 0` disarms, and a read without an expiration reports `Err(11)`. |
 | Stream I/O in [`event`](vstd/event.volt) | `stream_pair` opens two local nonblocking socket ends. Close both with `event_close`. `try_read`/`try_write` attempt a single operation on a connected stream socket; handle short counts and `EAGAIN` with `poll`. Reads return zero at EOF and writes do not raise `SIGPIPE`. |
 | [`arena`](docs/arena.md) | Fixed-capacity linear allocation for temporary objects. `unsafe` callers manage the arena and must stop using all allocated pointers on reset or drop. |
 | [`thread`](docs/thread.md) | Optional pthreads on Linux x86-64 with glibc ≥ 2.34. `unsafe` thread creation and joining, mutexes with try-lock, and condition variables with monotonic deadlines. Keep slots at stable addresses and worker data alive until a successful join. No compiler thread-safety checks. |
@@ -542,8 +545,9 @@ compile-time search paths. It does not download packages or run build scripts.
 Linux x86-64 and the documented ABI subset are the only supported target.
 Runtime checks on indexing and arithmetic do not make raw pointers and FFI
 memory-safe. `unsafe` is a caller obligation, not a sandbox. Slice borrow checks
-are lexical, and automatic destruction is limited to `OwnedBuffer`; ordinary
-`Buffer<T>` still requires manual release. Traits, const generics, closures,
+are lexical, and automatic destruction is limited to `OwnedBuffer`, including
+when held in a `Result`. Ordinary `Buffer<T>` still requires manual release.
+Traits, const generics, closures,
 tuple types, macros, `async`/`await`, arbitrary inline assembly blocks, and a
 garbage collector are not implemented. JavaScript promises and GPU dispatch
 are separate integrations.

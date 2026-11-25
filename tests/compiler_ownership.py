@@ -38,7 +38,7 @@ class Ownership(unittest.TestCase):
     def check_run(self, source, stdout, code=0, stderr=""):
         built = self.build(source)
         self.assertEqual(built.returncode, 0, built.stderr + built.stdout)
-        ran = subprocess.run([self.tmp / "program"], capture_output=True, text=True, timeout=5)
+        ran = subprocess.run([self.tmp / "program"], cwd=self.tmp, capture_output=True, text=True, timeout=5)
         self.assertEqual((ran.returncode, ran.stdout, ran.stderr), (code, stdout, stderr))
 
     def test_moves_into_arguments_and_results(self):
@@ -54,6 +54,133 @@ let again = pass(moved)
 consume(again)
 owned_buffer_new("z")
 ''', "read a\ndrop a\ndrop z\n")
+
+    def test_result_moves_through_ok_call_return_match_and_propagation(self):
+        self.check_run('''use fs
+
+fn checked_buffer(path: string) -> Result<OwnedBuffer, fs.IoError>:
+    let info = fs.stat(path)?
+    let buffer = owned_buffer_new("a")
+    defer print("checked")
+    return Ok(buffer)
+
+fn relay(result: Result<OwnedBuffer, fs.IoError>) -> Result<OwnedBuffer, fs.IoError>:
+    let next = result
+    return identity(next)
+
+fn identity<T>(value: T) -> T:
+    return value
+
+fn read_first(result: Result<OwnedBuffer, fs.IoError>) -> Result<i64, fs.IoError>:
+    defer print("read_first")
+    let buffer = result?
+    defer print("read", owned_buffer_get(&buffer, 0) as char)
+    return Ok(owned_buffer_len(&buffer))
+
+match relay(checked_buffer(".")):
+    Ok(buffer):
+        defer print("match", owned_buffer_get(&buffer, 0) as char)
+    Err(error): panic("expected buffer")
+match read_first(relay(checked_buffer("."))):
+    Ok(size): print(size)
+    Err(error): panic("expected size")
+match read_first(relay(checked_buffer("missing"))):
+    Ok(size): panic("expected error")
+    Err(error): print(fs.errno(error))
+''', "checked\nmatch a\ndrop a\nchecked\nread a\nread_first\ndrop a\n1\nread_first\n2\n")
+
+    def test_result_drops_only_live_ok_after_scope_and_arm_defers(self):
+        self.check_run('''fn make(value: string) -> Result<OwnedBuffer, i64>:
+    return Ok(owned_buffer_new(value))
+
+fn error() -> Result<OwnedBuffer, i64>:
+    return Err(23)
+
+fn scoped():
+    let live = make("a")
+    let failed = error()
+    defer print("scope")
+    return
+
+make("x")
+error()
+scoped()
+match make("b"):
+    Err(code): print(code)
+    _: defer print("wildcard")
+match error():
+    _: defer print("wildcard error")
+for i in 0..3:
+    let pending = make("c")
+    defer print("loop", i)
+    match make("d"):
+        Ok(buffer):
+            defer print("arm", owned_buffer_get(&buffer, 0) as char)
+            if i == 0: continue
+            break
+        Err(code): panic("unexpected error")
+''', ("drop x\nscope\ndrop a\nwildcard\ndrop b\nwildcard error\n"
+      "arm d\ndrop d\nloop 0\ndrop c\narm d\ndrop d\nloop 1\ndrop c\n"))
+
+    def test_result_and_extracted_owner_survive_aborted_argument_evaluation(self):
+        self.check_run('''fn make(value: string) -> Result<OwnedBuffer, i64>:
+    return Ok(owned_buffer_new(value))
+
+fn checked(fail: bool) -> Result<i64, i64>:
+    if fail: return Err(7)
+    return Ok(10)
+
+fn consume(a: Result<OwnedBuffer, i64>, b: OwnedBuffer, c: Result<OwnedBuffer, i64>, n: i64) -> i64:
+    defer print("called")
+    return n
+
+fn attempt(fail: bool) -> Result<i64, i64>:
+    let local = make("a")
+    defer print("caller")
+    return Ok(consume(local, make("b")?, Ok(owned_buffer_new("c")), checked(fail)?))
+
+match attempt(true):
+    Ok(n): panic("expected error")
+    Err(code): print(code)
+match attempt(false):
+    Ok(n): print(n)
+    Err(code): panic("expected success")
+''', ("caller\ndrop c\ndrop b\ndrop a\n7\n"
+      "called\ndrop c\ndrop b\ndrop a\ncaller\n10\n"))
+
+    def test_result_rejects_second_move_and_unsupported_storage(self):
+        header = '''fn make() -> Result<OwnedBuffer, i64>:
+    return Ok(owned_buffer_new("a"))
+
+fn consume(result: Result<OwnedBuffer, i64>):
+    return
+
+let result = make()
+'''
+        for source, expected in (
+            ("let next = result\nconsume(result)", "после переноса"),
+            ("if true:\n    match result:\n        _: print(1)\nconsume(result)", "после переноса"),
+            ("fn bad(value: Result<OwnedBuffer, i64>) -> Result<i64, i64>:\n"
+             "    let buffer = value?\n    consume(value)\n    return Ok(0)", "после переноса"),
+            ("let buffer = owned_buffer_new(\"b\")\n"
+             "let wrapped: Result<OwnedBuffer, i64> = Ok(buffer)\n"
+             "print(owned_buffer_len(&buffer))", "после переноса"),
+            ("let buffer = owned_buffer_new(\"b\")\n"
+             "defer print(owned_buffer_len(&buffer))\n"
+             "let wrapped: Result<OwnedBuffer, i64> = Ok(buffer)", "пока он заимствован"),
+            ("result = make()", "нельзя копировать"),
+            ("defer consume(result)", "defer не может переносить"),
+            ("let wrapped: Option<OwnedBuffer> = None", "недопустимый тип payload"),
+            ("let wrapped: Option<Result<OwnedBuffer, i64>> = None", "недопустимый тип payload"),
+            ("let wrong: Result<i64, OwnedBuffer> = Ok(1)", "недопустимый тип payload"),
+            ("struct Bag:\n    owner: Result<OwnedBuffer, i64>", "нельзя хранить в struct"),
+            ("let array = [result]", "нельзя хранить в массиве"),
+            ("extern fn external() -> Result<OwnedBuffer, i64>", "запрещены в extern/native"),
+        ):
+            with self.subTest(source=source):
+                built = self.build(header + source + "\n")
+                self.assertEqual(built.returncode, 1, built.stdout + built.stderr)
+                self.assertIn(expected, built.stderr)
 
     def test_scope_lifo_and_all_normal_exit_paths(self):
         self.check_run('''fn make(fail: bool) -> Result<i64, i64>:

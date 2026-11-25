@@ -51,8 +51,8 @@ unsafe native fn __volt_event_timerfd_settime(fd: i64, flags: i64, new_value: pt
     syscall
 }
 
-# shortcut: immutable slices are the only slice type; use unsafe until mutable slices exist.
-unsafe fn poll(fds: []EventPollFd, timeout_ms: i64) -> Result<i64, i32>:
+# The kernel writes revents only within the borrowed range and does not retain it.
+fn poll(fds: []mut EventPollFd, timeout_ms: i64) -> Result<i64, i32>:
     if timeout_ms < -1 or timeout_ms > 2147483647:
         return Err(22 as i32)
     let status: i64

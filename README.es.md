@@ -392,20 +392,23 @@ escalar y se construye con `Token.Number(42)`. Los discriminantes son únicos.
 Los patrones incluyen `_`, `Enum.Variant`, `Enum.Variant(name)`, `None`, `Some(name)`,
 `Ok(name)` y `Err(name)`. El conjunto de patrones debe ser exhaustivo y no
 solaparse; `_` cubre los restantes y se escribe al final. No hay guardas ni
-desestructuración. Los nombres vinculados son copias inmutables válidas solo
-dentro de la rama. Para `Option` o `Result`, se usa un valor local, un parámetro
+desestructuración. Los nombres vinculados son válidos solo dentro de la rama.
+Los datos copiables se copian; `Ok` transfiere el búfer del resultado que lo posee.
+Para `Option` o `Result`, se usa un valor local, un parámetro
 o el resultado de una función, no un constructor directo.
 
 `Option<T>` contiene `None` o `Some(T)` y `Result<T,E>` contiene `Ok(T)` o
 `Err(E)`. Si el constructor no determina todos los tipos, especifica una
 anotación o usa un contexto que los determine. `let r: Result<i64, i32> =
 Err(22 as i32)` contiene exactamente un `i32`. También se admiten estructuras
-copiables, enum con datos y `Option`/`Result` anidados, pero no vistas, arreglos
-por valor ni propietarios no copiables. Se pueden usar como locales, parámetros y resultados de funciones
-VOLT, pero no como variables globales, constantes, campos, elementos de arreglo
-ni variables inicializadas automáticamente a cero. La reasignación local o
-de un parámetro exige el mismo tipo, evalúa el lado derecho una vez y copia
-la etiqueta y los datos activos, poniendo a cero los bytes no utilizados.
+copiables, enum con datos y `Option`/`Result` anidados copiables, pero no vistas
+ni arreglos por valor. [`Result<OwnedBuffer, E>`](docs/owned-buffer.md) solo se
+puede mover y requiere un error copiable: `Ok` recibe el búfer y `match` o `?`
+consume el resultado. Los valores etiquetados pueden ser variables locales,
+parámetros o resultados de funciones VOLT, pero no variables globales, constantes,
+campos, elementos de arreglo ni variables inicializadas automáticamente a cero.
+Solo se pueden reasignar valores etiquetados copiables del mismo tipo; el lado
+derecho se evalúa una sola vez.
 
 `?` extrae el valor de éxito. Con `None` o `Err` retorna de la función VOLT
 que lo contiene y ejecuta sus `defer` y `drop`. Para `Option` el retorno debe ser
@@ -529,7 +532,7 @@ ejecuta scripts.
 | [`time`](vstd/time.volt) | `monotonic_ms() -> Result<i64, i32>` mide intervalos, no fechas. |
 | [`fs`](vstd/fs.volt) | `file_size` devuelve el tamaño lógico, incluidos los huecos de archivos dispersos. `create_dir` crea un directorio, `rename_path` mueve una entrada sin reemplazar el destino y `remove_file`/`remove_dir` eliminan un archivo o enlace simbólico y un directorio vacío, respectivamente. Operaciones síncronas de Linux con `errno` positivo en `Err`. |
 | [`process`](vstd/process.volt) | `argc`, `arg_at` y el entorno sin procesar leen la pila inicial de Linux. `arg_at` devuelve una cadena prestada o `Err(22)`; `process_exec_wait` ejecuta sin shell. |
-| [`event`](vstd/event.volt) | `poll` consulta descriptores y escribe `revents` en el arreglo que respalda la vista, por lo que es `unsafe`. `poll_readable` devuelve flags de un descriptor. El tiempo límite son milisegundos de `i32` (`-1`: espera indefinida, `0`: consulta inmediata). `poll` devuelve 0 si vence el plazo. `timer_create`, `timer_set`, `timer_read` y `timer_close` operan con `timerfd` monotónico no bloqueante; `first_ms = 0` lo desactiva y sin expiraciones se devuelve `Err(11)`. |
+| [`event`](vstd/event.volt) | `poll` recibe `[]mut EventPollFd` y escribe `revents` en esa vista sin que el llamador necesite `unsafe`. `poll_readable` devuelve flags de un descriptor. El tiempo límite son milisegundos de `i32` (`-1`: espera indefinida, `0`: consulta inmediata). `poll` devuelve 0 si vence el plazo. `timer_create`, `timer_set`, `timer_read` y `timer_close` operan con `timerfd` monotónico no bloqueante; `first_ms = 0` lo desactiva y sin expiraciones se devuelve `Err(11)`. |
 | Flujos de [`event`](vstd/event.volt) | `stream_pair` abre dos extremos de un socket local no bloqueante; se cierran con `event_close`. `try_read` y `try_write` intentan una operación en un socket de flujo conectado. Gestiona transferencias parciales y `EAGAIN` con `poll`. La lectura devuelve cero al final; la escritura no emite `SIGPIPE`. |
 | [`arena`](docs/arena.md) | Asignación lineal de capacidad fija para objetos temporales. El llamador usa `unsafe` y no puede conservar los punteros tras reiniciar o liberar la arena. |
 | [`thread`](docs/thread.md) | Pthreads opcionales en Linux x86-64 con glibc ≥ 2.34. Creación y espera de hilos con `unsafe`, mutex con intento de bloqueo y variables de condición con plazos monótonos. Conserva las direcciones y los datos vivos hasta un `join` exitoso. El compilador no analiza la seguridad entre hilos. |
@@ -546,7 +549,8 @@ Solo se admite Linux x86-64 con el subconjunto de ABI descrito. Comprobar
 índices y aritmética no hace seguros los punteros sin procesar ni el FFI.
 `unsafe` asigna responsabilidades al llamador: no es una zona aislada. La
 comprobación de préstamos de vistas es léxica y la destrucción automática se
-limita a `OwnedBuffer`; `Buffer<T>` aún se libera manualmente. No se implementan
+limita a `OwnedBuffer`, incluso dentro de un `Result`. `Buffer<T>` aún se libera
+manualmente. No se implementan
 traits, genéricos con parámetros constantes, clausuras, tuplas, macros,
 `async`/`await`, bloques arbitrarios de ensamblador en línea ni un recolector de
 basura. Las promesas de JavaScript y CUDA son integraciones aparte, no sintaxis de VOLT.

@@ -630,8 +630,11 @@ unsafe fn cce_expr_propagate(v_self: i64, v_e: i64) -> i64:
     let v_success_tag: i64 = 0
     v_typ = cv_getkey(v_e, "wrapper_type")
     v_src = cce_talloc(v_self)
-    cce_expr_value(v_self, cv_getkey(v_e, "x"), 0)
+    let operand: i64 = cv_getkey(v_e, "x")
+    cce_expr_value(v_self, operand, 0)
     cce_e(v_self, cv_mod(cv_text("mov qword ptr [rbp%+d], rax"), cce_toff(v_self, v_src)))
+    # A failing owned Result has no buffer; its error remains available to snapshot.
+    cce_owner_flag(v_self, cv_getkey(operand, "owner_transfer"), 0)
     v_fail = cce_lbl(v_self)
     v_done = cce_lbl(v_self)
     let choice_3: i64 = 0
@@ -651,6 +654,7 @@ unsafe fn cce_expr_propagate(v_self: i64, v_e: i64) -> i64:
         cce_e(v_self, cv_mod(cv_text("lea rax, [rbp%+d]"), off))
     else:
         cce_load_from_mem(v_self, payload)
+    cce_owner_flag(v_self, cv_getkey(v_e, "owner_result"), 1)
     cce_e(v_self, cv_cat(cv_text("jmp "), cv_format(v_done, "")))
     cce_label(v_self, v_fail, 0)
     cce_emit_propagated_wrapper_return(v_self, v_typ, v_src)
@@ -763,6 +767,7 @@ unsafe fn cce_expr_value(v_self: i64, v_e: i64, v_hint_int: i64) -> i64:
         else:
             off = cce_toff(v_self, cce_talloc(v_self))
         cce_emit_sum_ctor(v_self, v_e, off)
+        cce_owner_flag(v_self, cv_getkey(v_e, "owner_result"), 1)
         cce_e(v_self, cv_mod(cv_text("lea rax, [rbp%+d]"), off))
         return v_t
     if cv_classes(v_e, "Call"):
@@ -2405,7 +2410,7 @@ unsafe fn cce_emit_stmts(v_self: i64, v_stmts: i64) -> i64:
     for i in 0..cv_len(owners):
         let slot: i64 = cv_at(owners, i)
         let live: i64 = 0
-        if cv_name(cv_getkey(slot, "kind"), "param"): live = 1
+        if cv_name(cv_getkey(slot, "kind"), "param") or cv_truth(cv_getkey(slot, "owner_at_entry")): live = 1
         cce_owner_flag(v_self, slot, live)
     let seq_3: i64 = v_stmts
     for index_2 in 0..cv_len(seq_3):
@@ -2451,7 +2456,13 @@ unsafe fn cce_drop_owner(emitter: i64, slot: i64):
     cce_e(emitter, cv_mod(cv_text("cmp qword ptr [rbp%+d], 0"), off))
     cce_e(emitter, cv_cat(cv_text("je "), skip))
     cce_owner_flag(emitter, slot, 0)
-    cce_e(emitter, cv_mod(cv_text("lea rdi, [rbp%+d]"), cce_soff(emitter, slot)))
+    let storage: i64 = cce_soff(emitter, slot)
+    let typ: i64 = cv_getkey(slot, "typ")
+    if cc_is_owned_result(typ):
+        cce_e(emitter, cv_mod(cv_text("cmp qword ptr [rbp%+d], 0"), storage))
+        cce_e(emitter, cv_cat(cv_text("jne "), skip))
+        storage = cv_add(storage, cv_getkey(typ, "payload_off"))
+    cce_e(emitter, cv_mod(cv_text("lea rdi, [rbp%+d]"), storage))
     cce_e(emitter, cv_cat(cv_text("call "), cc_function_label(cv_text("__volt_owned_buffer_drop"), file)))
     cce_label(emitter, skip, 0)
 
@@ -2601,6 +2612,11 @@ unsafe fn cce_emit_match(v_self: i64, v_st: i64) -> i64:
             cv_push(pieces_8, cv_text("]"))
             cce_e(v_self, cv_join(cv_text(""), pieces_8))
             cce_copy_bytes(v_self, cc_type_size(cv_getkey(cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_arm, "binding_slot")), "typ")))
+        let discard: i64 = cv_getkey(v_arm, "owner_discard")
+        if discard != 0:
+            cce_e(v_self, cv_mod(cv_text("mov rax, qword ptr [rbp%+d]"), cce_toff(v_self, v_source)))
+            cce_copy_from_rax(v_self, cce_soff(v_self, discard), cc_type_size(v_t))
+        cce_owner_flag(v_self, cv_getkey(value, "owner_transfer"), 0)
         cce_emit_stmts(v_self, cv_getkey(v_arm, "body"))
         cce_e(v_self, cv_cat(cv_text("jmp "), cv_format(v_done, "")))
         cce_label(v_self, v_nxt, 0)
@@ -2754,6 +2770,7 @@ unsafe fn cce_emit_sum_ctor(v_self: i64, v_ctor: i64, v_base_soff: i64) -> i64:
             else:
                 cce_eaddr(v_self, v_arg)
                 cce_copy_from_rax(v_self, v_at, cc_type_size(v_pt))
+            cce_owner_flag(v_self, cv_getkey(v_arg, "owner_transfer"), 0)
             return 0
         cce_expr_value(v_self, v_arg, 0)
         if cc_is_tagged_value(v_pt):

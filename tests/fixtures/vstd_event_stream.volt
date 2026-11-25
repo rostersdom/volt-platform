@@ -91,7 +91,7 @@ unsafe fn check_backpressure():
     expect_io(try_write(pair.first, &data[0], 32768), -11, "full stream returns EAGAIN")
 
     let entries: [1]EventPollFd = [EventPollFd(pair.first as i32, POLLOUT as i16, 0 as i16)]
-    let watched: []EventPollFd = entries[0..1]
+    let watched: []mut EventPollFd = mut entries[0..1]
     expect_io(poll(watched, 0), 0, "full stream not writable")
     while sent > 0:
         match try_read(pair.second, &data[0], 32768):

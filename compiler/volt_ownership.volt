@@ -1,12 +1,18 @@
 use volt_types
 
-unsafe fn cc_is_owned(typ: i64) -> bool:
+unsafe fn cc_is_owned_buffer(typ: i64) -> bool:
     return cv_truth(cv_getkey(typ, "owned_buffer"))
+
+unsafe fn cc_is_owned_result(typ: i64) -> bool:
+    return cv_truth(cv_getkey(typ, "owned_ok"))
+
+unsafe fn cc_is_owned(typ: i64) -> bool:
+    return cc_is_owned_buffer(typ) or cc_is_owned_result(typ)
 
 unsafe fn cc_is_owned_ptr(typ: i64) -> bool:
     return cv_classes(typ, "TPtr") and cc_is_owned(cv_getkey(typ, "elem"))
 
-# shortcut: only the vstd OwnedBuffer has drop; user-defined and partially moved owners need a general place model.
+# shortcut: only OwnedBuffer and its direct Result have drop; general owners need a place model.
 unsafe fn ccs_check_ownership(sem: i64, fn_def: i64):
     if not cv_truth(cv_getkey(sem, "has_owned_buffer")): return
     let flow: i64 = cv_node("Ownership")
@@ -19,7 +25,7 @@ unsafe fn ccs_check_ownership(sem: i64, fn_def: i64):
     let scopes: i64 = cv_dict()
     cv_field(flow, "scopes", scopes)
     cv_field(fn_def, "owner_scopes", scopes)
-    cc_owned_block(flow, cv_getkey(fn_def, "body"), cv_vector(CV_SET))
+    cc_owned_block(flow, cv_getkey(fn_def, "body"), cv_vector(CV_SET), 0)
 
 unsafe fn cc_owned_error(flow: i64, node: i64, message: string):
     cc_error(cv_text(message), cv_getkey(flow, "file"), cv_getkey(node, "line"))
@@ -35,6 +41,13 @@ unsafe fn cc_owned_slot(flow: i64, slot: i64):
 const CC_OWNER_VALUE: i64 = 0
 const CC_OWNER_MOVE: i64 = 1
 
+unsafe fn cc_owned_temporary(flow: i64, expr: i64):
+    let slots: i64 = cv_getkey(cv_getkey(flow, "sem"), "slots")
+    let slot: i64 = cv_subscript(slots, cv_getkey(expr, "temp_slot"))
+    cc_owned_slot(flow, slot)
+    cv_field(expr, "owner_result", slot)
+    cv_field(expr, "owner_transfer", slot)
+
 unsafe fn cc_owned_expr(flow: i64, moved: i64, expr: i64, use_kind: i64):
     if expr == 0: return
     let typ: i64 = cv_getkey(expr, "type")
@@ -49,6 +62,10 @@ unsafe fn cc_owned_expr(flow: i64, moved: i64, expr: i64, use_kind: i64):
                 cc_owned_error(flow, expr, "OwnedBuffer нельзя перенести, пока он заимствован вызовом или defer")
             cv_add_set(moved, cv_i(slot))
             cv_field(expr, "owner_transfer", slot)
+            return
+        if cv_classes(expr, "Unary") and cv_name(cv_getkey(expr, "op"), "?"):
+            cc_owned_expr(flow, moved, cv_getkey(expr, "x"), CC_OWNER_MOVE)
+            cc_owned_temporary(flow, expr)
             return
         if not cv_classes(expr, "Call"): cc_owned_error(flow, expr, "OwnedBuffer можно перенести только целиком")
     if cc_is_owned_ptr(typ) and not cv_truth(cv_getkey(flow, "trusted")):
@@ -67,7 +84,7 @@ unsafe fn cc_owned_expr(flow: i64, moved: i64, expr: i64, use_kind: i64):
             if reader and i == 0 and cv_classes(arg, "AddrOf"):
                 let owner: i64 = cv_getkey(arg, "x")
                 let owner_slot: i64 = cv_getkey(owner, "slot")
-                if owner_slot == 0 or not cc_is_owned(cv_getkey(owner_slot, "typ")):
+                if owner_slot == 0 or not cc_is_owned_buffer(cv_getkey(owner_slot, "typ")):
                     cc_owned_error(flow, arg, "требуется адрес локального OwnedBuffer")
                 if cv_contains(moved, cv_i(owner_slot)):
                     cc_owned_error(flow, arg, "OwnedBuffer использован после переноса")
@@ -80,10 +97,7 @@ unsafe fn cc_owned_expr(flow: i64, moved: i64, expr: i64, use_kind: i64):
                 cc_owned_expr(flow, moved, arg, CC_OWNER_MOVE)
         cv_field(flow, "call_reads", old_reads)
         if cc_is_owned(typ) and not cv_name(cv_getkey(expr, "kindt"), "ctor"):
-            let temporary: i64 = cv_at(cv_getkey(sem, "slots"), cv_index(cv_getkey(expr, "temp_slot")))
-            cc_owned_slot(flow, temporary)
-            cv_field(expr, "owner_result", temporary)
-            cv_field(expr, "owner_transfer", temporary)
+            cc_owned_temporary(flow, expr)
         return
     if cv_classes(expr, "Member"):
         if not cv_has(expr, cv_text("enum_value")) and not cv_has(expr, cv_text("const_binding")) and not cc_is_sum_ctor(expr):
@@ -100,7 +114,7 @@ unsafe fn cc_owned_expr(flow: i64, moved: i64, expr: i64, use_kind: i64):
         cc_owned_expr(flow, moved, cv_getkey(expr, "start"), CC_OWNER_VALUE)
         cc_owned_expr(flow, moved, cv_getkey(expr, "end"), CC_OWNER_VALUE)
 
-unsafe fn cc_owned_block(flow: i64, body: i64, moved: i64) -> bool:
+unsafe fn cc_owned_block(flow: i64, body: i64, moved: i64, entry: i64) -> bool:
     let frames: i64 = cv_getkey(flow, "frames")
     let frame: i64 = cv_list()
     let pinned: i64 = cv_getkey(flow, "pinned")
@@ -112,6 +126,9 @@ unsafe fn cc_owned_block(flow: i64, body: i64, moved: i64) -> bool:
         for i in 0..count:
             let slot: i64 = cv_at(slots, i)
             if cv_name(cv_getkey(slot, "kind"), "param") and cc_is_owned(cv_getkey(slot, "typ")): cc_owned_slot(flow, slot)
+    if entry != 0:
+        cc_owned_slot(flow, entry)
+        cv_field(entry, "owner_at_entry", CV_TRUE)
     let falls_through: bool = true
     for i in 0..cv_len(body):
         if not cc_owned_stmt(flow, cv_at(body, i), moved):
@@ -165,7 +182,7 @@ unsafe fn cc_owned_stmt(flow: i64, stmt: i64, moved: i64) -> bool:
         cc_owned_expr(flow, moved, cv_getkey(stmt, "value"), CC_OWNER_MOVE)
         return false
     elif cv_classes(stmt, "UnsafeStmt"):
-        return cc_owned_block(flow, cv_getkey(stmt, "body"), moved)
+        return cc_owned_block(flow, cv_getkey(stmt, "body"), moved, 0)
     elif cv_classes(stmt, "IfStmt"):
         let arms: i64 = cv_getkey(stmt, "conds")
         let merged: i64 = cv_vector(CV_SET)
@@ -174,23 +191,40 @@ unsafe fn cc_owned_stmt(flow: i64, stmt: i64, moved: i64) -> bool:
             let arm: i64 = cv_at(arms, i)
             cc_owned_expr(flow, moved, cv_at(arm, 0), CC_OWNER_VALUE)
             let branch: i64 = cv_asset(moved)
-            if cc_owned_block(flow, cv_at(arm, 1), branch):
+            if cc_owned_block(flow, cv_at(arm, 1), branch, 0):
                 flows = true
                 cc_owned_join(merged, branch)
-        if cc_owned_block(flow, cv_getkey(stmt, "els"), moved):
+        if cc_owned_block(flow, cv_getkey(stmt, "els"), moved, 0):
             flows = true
             cc_owned_join(merged, moved)
         while cv_len(moved) > 0: cv_pop(moved)
         cc_owned_join(moved, merged)
         return flows
     elif cv_classes(stmt, "MatchStmt"):
-        cc_owned_expr(flow, moved, cv_getkey(stmt, "value"), CC_OWNER_VALUE)
+        let value: i64 = cv_getkey(stmt, "value")
+        let typ: i64 = cv_getkey(value, "type")
+        let owned: bool = cc_is_owned_result(typ)
+        let mode: i64 = CC_OWNER_VALUE
+        if owned: mode = CC_OWNER_MOVE
+        cc_owned_expr(flow, moved, value, mode)
         let arms: i64 = cv_getkey(stmt, "arms")
         let merged: i64 = cv_vector(CV_SET)
         let flows: bool = false
+        let sem: i64 = cv_getkey(flow, "sem")
         for i in 0..cv_len(arms):
+            let arm: i64 = cv_at(arms, i)
+            let entry: i64 = 0
+            if owned:
+                let pattern: i64 = cv_getkey(arm, "pattern")
+                if cv_name(pattern, "Ok"):
+                    entry = cv_subscript(cv_getkey(sem, "slots"), cv_getkey(arm, "binding_slot"))
+                elif cv_name(pattern, "_"):
+                    # Keep an ignored Ok alive until the arm has run its defers.
+                    let id: i64 = ccs_declare_temp(sem, typ, cv_getkey(arm, "line"))
+                    entry = cv_subscript(cv_getkey(sem, "slots"), id)
+                    cv_field(arm, "owner_discard", entry)
             let branch: i64 = cv_asset(moved)
-            if cc_owned_block(flow, cv_getkey(cv_at(arms, i), "body"), branch):
+            if cc_owned_block(flow, cv_getkey(arm, "body"), branch, entry):
                 flows = true
                 cc_owned_join(merged, branch)
         cc_owned_join(moved, merged)
@@ -206,7 +240,7 @@ unsafe fn cc_owned_stmt(flow: i64, stmt: i64, moved: i64) -> bool:
         cv_push(loops, loop)
         cc_owned_expr(flow, moved, cv_getkey(stmt, "cond"), CC_OWNER_VALUE)
         let branch: i64 = cv_asset(moved)
-        if cc_owned_block(flow, cv_getkey(stmt, "body"), branch): cc_owned_backedge(flow, stmt, loop, branch)
+        if cc_owned_block(flow, cv_getkey(stmt, "body"), branch, 0): cc_owned_backedge(flow, stmt, loop, branch)
         cc_owned_join(moved, cv_at(loop, 1))
         cv_pop(loops)
     elif cv_classes(stmt, "BreakStmt") or cv_classes(stmt, "ContinueStmt"):

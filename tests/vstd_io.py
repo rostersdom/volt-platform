@@ -68,6 +68,18 @@ class VstdIO(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=self.build, prefix="event-") as tmp:
             self.run_fixture("vstd_event_stream", tmp, "event stream ok")
 
+    def test_poll_rejects_read_only_slice_even_in_unsafe(self):
+        source = self.build / "poll_read_only.volt"
+        source.write_text("""use event
+let entries: [1]EventPollFd
+unsafe: poll(entries[0..1], 0)
+""", encoding="utf-8")
+        result = subprocess.run([VOLT, source, "-o", self.build / source.stem],
+                                cwd=self.build, env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("poll: аргумент 'fds'", result.stderr)
+        self.assertIn("[]mut EventPollFd", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
