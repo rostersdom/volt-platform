@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Core compiler/stdlib checks on Linux x86-64. The required suites must not
+  # pass vacuously: run_all.py fails the job if a --require suite skips every
+  # test (e.g. via a platform skipUnless).
+  core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the two-stage bootstrap
+        # Rebuilds the compiler twice from bootstrap/volt-linux-x86_64 and
+        # compares the binaries (see the verify-bootstrap Makefile target).
+        run: make verify-bootstrap
+
+      - name: Run the core suites
+        # --skip-verify-bootstrap: the step above already did it.
+        run: >
+          python3 tests/run_all.py --group core --skip-verify-bootstrap
+          --require compiler_ownership
+          --require compiler_slice_borrows
+          --require abi_integration
+          --require vstd_io
+
+  # Browser suites are a separate group: python3 tests/run_all.py --group browser
+  #
+  # They need the native browser stack (SDL2, Cairo, Pango, OpenSSL 3, zlib,
+  # libwebp) plus TurboJPEG 3 (tj3*), which Ubuntu 24.04 does not package --
+  # it must be installed separately (previously a checksum-verified 3.2.1
+  # release tarball). That setup is intentionally kept OUT of the core job.
+  #
+  # Until a runner image with those dependencies exists, this job is a
+  # documented stub and does not execute the browser suites.
+  browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Browser suites not wired up yet
+        run: |
+          echo "browser group: python3 tests/run_all.py --group browser"
+          echo "blocked on runner deps: SDL2/Cairo/Pango/OpenSSL/zlib/libwebp"
+          echo "plus TurboJPEG 3 (tj3*, checksum-verified 3.2.1) not in Ubuntu 24.04"
