@@ -16,6 +16,11 @@ fn owned_buffer_new(initial: string) -> OwnedBuffer:
         storage.len = count
     return OwnedBuffer(storage)
 
+# Adopt an already filled ByteBuffer without copying its bytes. The caller
+# must not touch or free `storage` afterwards; the OwnedBuffer owns it now.
+fn owned_buffer_from_bytes(storage: ByteBuffer) -> OwnedBuffer:
+    return OwnedBuffer(storage)
+
 # &owner is accepted only as an immediate argument to these two readers.
 fn owned_buffer_len(buffer: ptr<OwnedBuffer>) -> i64:
     unsafe: return buffer.storage.len

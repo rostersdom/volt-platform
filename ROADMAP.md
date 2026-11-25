@@ -64,6 +64,10 @@
 - [x] [`fs.OwnedFd`](docs/owned-fd.md): реестр владеющих типов вместо жёсткой
       привязки к `OwnedBuffer`, `fs.open_owned`, автоматический `close(2)`
       ровно один раз после `defer`, `Result<fs.OwnedFd, E>` по той же схеме.
+- [x] [`fs.read_all`](docs/owned-buffer.md): чтение целого файла в
+      `Result<OwnedBuffer, fs.IoError>` с лимитом `max_bytes` (`EFBIG` сверх
+      лимита, `EINVAL` при неположительном) — первый клиент переноса владения
+      через `?` без ручного освобождения буфера.
 - [x] [`TextView`](docs/text-view.md): сохранённая длина, доступ к байту и
       поддиапазон за O(1); явный переход к C-строке.
 - [x] [`T: Eq`](docs/language.md#ограничение-t-eq): проверка при вызове,

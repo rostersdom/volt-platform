@@ -45,3 +45,7 @@ print(store.number(fd))
 и возвращает непрозрачный `fs.Descriptor`. Он пока копируемый: вызывающий
 обязан закрыть его ровно один раз через `unsafe fs.close_file` (внутри блока
 `unsafe:`) и не использовать копии после закрытия.
+`fs.read_all(path, max_bytes)` читает файл целиком, но не более `max_bytes`
+байт, и возвращает некопируемый `Result<OwnedBuffer, fs.IoError>` — буфер
+переносится через `match` или `?` и освобождается автоматически (см.
+[owned-buffer.md](owned-buffer.md)).
