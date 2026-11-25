@@ -22,6 +22,19 @@ VCC = os.path.join(ROOT, "volt")
 SNAKE = os.path.join(ROOT, "apps", "snake.volt")
 
 
+def sdl2_available():
+    pkg_config = shutil.which("pkg-config")
+    if not pkg_config:
+        return False
+    return subprocess.run([pkg_config, "--exists", "sdl2"],
+                          capture_output=True).returncode == 0
+
+
+# apps/snake.volt links -lSDL2; on a headless runner without the SDL2
+# development package the build cannot succeed (see tests/run_all.py groups).
+SDL2_AVAILABLE = sdl2_available()
+
+
 class VoltReviewRegressions(unittest.TestCase):
     def test_generic_function_monomorphization_and_inference(self):
         result = self.compile_run('''fn identity<T>(value: T) -> T:
@@ -1107,6 +1120,7 @@ print(first.x, first.y, second.x, second.y, third.x, third.y, saved.x, saved.y)
         result = self.compile_run('put_errnl("x")\n')
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", "x\n"))
 
+    @unittest.skipUnless(SDL2_AVAILABLE, "snake needs the SDL2 development package")
     def test_snake_sdl_startup_and_quit_without_a_terminal(self):
         with tempfile.TemporaryDirectory(prefix="volt-snake-") as tmp:
             exe = os.path.join(tmp, "snake")

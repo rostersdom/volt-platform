@@ -29,6 +29,9 @@ jobs:
           --require vstd_fs
 
   # Browser suites are a separate group: python3 tests/run_all.py --group browser
+  # The group is an explicit allow-list (see BROWSER_SUITES in run_all.py):
+  # the browser_* suites plus sdl_integration and volt_launcher_integration,
+  # which link -lSDL2 through vstd/sdl.volt.
   #
   # They need the native browser stack (SDL2, Cairo, Pango, OpenSSL 3, zlib,
   # libwebp) plus TurboJPEG 3 (tj3*), which Ubuntu 24.04 does not package --
