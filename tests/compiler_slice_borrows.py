@@ -216,6 +216,37 @@ compare(view, view)
         self.assert_panics("let values = [3]\nlet view = mut values[0..3]\nlet got: []i64 = view[0..4]\n",
                            "volt: invalid slice range")
 
+    def test_temp_slice_in_condition_releases_before_the_body(self):
+        # A temporary slice argument of an if/while/for condition borrows its
+        # owner only while the condition is evaluated; the body may write.
+        self.assert_runs('''fn set_first(dst: []mut u8, value: i64) -> i64:
+    dst[0] = value as u8
+    return dst[0] as i64
+
+let arr: [4]u8 = [0, 0, 0, 0]
+if set_first(mut arr[0..4], 1) == 1:
+    arr[1] = 2
+    print(arr[0], arr[1])
+let i = 0
+while set_first(mut arr[0..4], 3) == 3 and i < 1:
+    arr[1] = 4
+    i += 1
+print(arr[0], arr[1])
+for j in 0..set_first(mut arr[0..4], 5):
+    arr[1] = 6
+print(arr[0], arr[1])
+''', "1 2\n3 4\n5 6\n")
+        # A named slice in the condition still holds the loan for its block.
+        self.assert_rejected('''fn set_first(dst: []mut u8) -> i64:
+    dst[0] = 1
+    return 1
+
+let arr: [4]u8 = [0, 0, 0, 0]
+let m: []mut u8 = mut arr[0..4]
+if set_first(m) == 1:
+    arr[0] = 9
+''', "нельзя")
+
     def test_mut_slice_read_reslice_scoped_to_block(self):
         self.assert_runs('''fn sum(got: []i64) -> i64:
     let total = 0

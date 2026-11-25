@@ -3850,6 +3850,8 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
             v_body = cv_at(unpack_75, 1)
             ccs_tf(v_self, v_cond, 0)
             ccs_truthy_check(v_self, cv_getkey(v_cond, "type"), v_cond)
+            # Temporary slice arguments of the condition end their loans before the body.
+            ccs_apply_temp_slice_releases(v_self)
             cv_push(cv_getkey(v_self, "scope"), cv_dict())
             ccs_typecheck_stmts(v_self, v_body)
             cv_pop(cv_getkey(v_self, "scope"))
@@ -3861,6 +3863,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
     if cv_classes(v_st, "WhileStmt"):
         ccs_tf(v_self, cv_getkey(v_st, "cond"), 0)
         ccs_truthy_check(v_self, cv_getkey(cv_getkey(v_st, "cond"), "type"), cv_getkey(v_st, "cond"))
+        ccs_apply_temp_slice_releases(v_self)
         cv_push(cv_getkey(cv_getkey(v_self, "fn"), "loop_stack"), v_st)
         cv_push(cv_getkey(v_self, "loop_scope_depth"), cv_length(cv_getkey(v_self, "defer_stack")))
         cv_push(cv_getkey(v_self, "scope"), cv_dict())
@@ -3872,6 +3875,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
     if cv_classes(v_st, "ForStmt"):
         v_a = ccs_tf(v_self, cv_getkey(v_st, "start"), 0)
         v_b = ccs_tf(v_self, cv_getkey(v_st, "stop"), 0)
+        ccs_apply_temp_slice_releases(v_self)
         if (not (cv_truth(cc_is_int(v_a))) or not (cv_truth(cc_is_int(v_b))) or cv_classes(v_a, "TEnum") or cv_classes(v_b, "TEnum")):
             cc_error(cv_text("границы for должны иметь целочисленный тип, кроме enum"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
             return 0
