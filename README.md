@@ -447,7 +447,11 @@ stable C type layout or call contract.
 - **Slices:** `data[start..end]` makes a checked read-only `[]T` view;
   `mut data[start..end]` creates an exclusive `[]mut T` of a local array.
   Several read-only views may coexist; a mutable view prevents all direct
-  array access until block exit, including `defer`. Read-only views can be
+  array access until block exit, including `defer`. A mutable view can be
+  re-sliced for reading: `buf[0..n]` (without `mut`) yields a `[]T` child,
+  and while that child lives, writing through the mutable view or passing
+  it as `[]mut` is rejected; writes resume after the child's block ends.
+  Read-only views can be
   re-sliced or returned from an explicit parameter source. Slice bindings
   cannot be reassigned or stored in aggregates, and do not cross the C ABI.
 - **Raw pointers:** `&place` produces a pointer to an addressable target.

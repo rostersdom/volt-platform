@@ -32,6 +32,7 @@ unsafe fn ccs_new(v_progs: i64, v_entry_name: i64) -> i64:
     cv_field(v_self, "_string", cc_k_string_type)
     cv_field(v_self, "unsafe_depth", 3)
     cv_field(v_self, "borrowed_slots", cv_vector(CV_SET))
+    cv_field(v_self, "frozen_mut_slots", cv_vector(CV_SET))
     cv_field(v_self, "buffer_borrow_file", cc_path_join(cc_std, cv_text("borrow_buffer.volt")))
     cv_field(v_self, "owned_buffer_file", cc_path_join(cc_std, cv_text("owned_buffer.volt")))
     cv_field(v_self, "lbl_prefix", cv_text("VOLT_L"))
@@ -1611,6 +1612,7 @@ unsafe fn ccs_setup_fn(v_self: i64, v_fn: i64) -> i64:
     cv_field(v_self, "unsafe_depth", 3)
     cv_field(v_self, "borrowed_slots", cv_vector(CV_SET))
     cv_field(v_self, "exclusive_slots", cv_vector(CV_SET))
+    cv_field(v_self, "frozen_mut_slots", cv_vector(CV_SET))
     let items_7: i64 = cv_vector(CV_LIST)
     cv_field(v_fn, "loop_stack", items_7)
     return 0
@@ -2165,6 +2167,12 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
             v_owner = cv_getkey(v_base, "slot")
         elif not cv_truth(v_mutable) and cv_classes(v_bt, "TSlice") and not cc_is_mut_slice(v_bt):
             v_owner = ccs_slice_origin(v_base)
+        elif not cv_truth(v_mutable) and cv_classes(v_bt, "TSlice"):
+            # Read-only re-slice of a []mut T: freeze the handle against writes
+            # until the end of this block, like any other lexical loan.
+            v_owner = ccs_slice_origin(v_base)
+            if v_owner != 0 and cv_classes(v_base, "VarRef"):
+                cv_add_set(cv_getkey(v_self, "frozen_mut_slots"), cv_getkey(v_base, "slot"))
         if v_owner == 0:
             cc_error(cv_text("slice source должен быть локальным массивом или неизменяемым slice с известным источником"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
             return 0
@@ -2422,6 +2430,8 @@ unsafe fn ccs_check_mut_slice_args(v_self: i64, v_e: i64):
         let v_slot: i64 = cv_getkey(v_arg, "slot")
         if not cv_classes(v_arg, "VarRef") or v_slot == 0:
             cc_error(cv_text("аргумент []mut должен быть именем изменяемого slice или диапазоном локального массива"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
+        if cv_contains(cv_getkey(v_self, "frozen_mut_slots"), v_slot):
+            cc_error(cv_text("изменяемый slice нельзя передать как []mut, пока из него создан slice на чтение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
         for j in 0..i:
             if cv_getkey(cv_at(v_args, j), "slot") == v_slot:
                 cc_error(cv_text("изменяемый slice нельзя передать дважды в один вызов"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
@@ -3107,6 +3117,8 @@ unsafe fn ccs_typecheck_stmts(v_self: i64, v_stmts: i64) -> i64:
     let v_borrow_count: i64 = cv_len(v_borrows)
     let v_exclusive: i64 = cv_getkey(v_self, "exclusive_slots")
     let v_exclusive_count: i64 = cv_len(v_exclusive)
+    let v_frozen: i64 = cv_getkey(v_self, "frozen_mut_slots")
+    let v_frozen_count: i64 = cv_len(v_frozen)
     cv_push(cv_getkey(v_self, "scope"), cv_dict())
     cv_push(cv_getkey(v_self, "const_scope"), cv_dict())
     let items_1: i64 = cv_vector(CV_LIST)
@@ -3143,6 +3155,8 @@ unsafe fn ccs_typecheck_stmts(v_self: i64, v_stmts: i64) -> i64:
         cv_pop(v_borrows)
     while cv_len(v_exclusive) > v_exclusive_count:
         cv_pop(v_exclusive)
+    while cv_len(v_frozen) > v_frozen_count:
+        cv_pop(v_frozen)
     cv_pop(cv_getkey(v_self, "defer_stack"))
     cv_field(v_self, "future_local_names", v_old_future)
     let seq_9: i64 = v_stmts
@@ -4012,6 +4026,9 @@ unsafe fn ccs_check_lvalue(v_self: i64, v_e: i64) -> i64:
         cc_error(cv_text("неизменяемый slice нельзя изменять"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
         return 0
     ccs_check_exclusive_owner(v_self, v_place)
+    if cv_classes(v_place, "VarRef") and cv_contains(cv_getkey(v_self, "frozen_mut_slots"), cv_getkey(v_place, "slot")):
+        cc_error(cv_text("нельзя писать через изменяемый slice, пока из него создан slice на чтение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        return 0
     if cv_classes(v_place, "VarRef") and cv_contains(cv_getkey(v_self, "borrowed_slots"), cv_getkey(v_place, "slot")):
         cc_error(cv_text("нельзя менять массив, пока slice ссылается на него"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
         return 0

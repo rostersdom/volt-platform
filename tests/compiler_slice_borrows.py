@@ -195,7 +195,7 @@ compare(view, view)
             ("let contents = [view]", "slice нельзя хранить в массиве"),
             ("let alias: []mut i64", "slice требует инициализатор"),
             ("unsafe:\n    let ptr_to_view = &view", "нельзя взять адрес дескриптора"),
-            ("let sub = view[0..1]", "slice source должен быть локальным массивом"),
+            ("let sub = mut view[0..1]", "slice source должен быть локальным массивом"),
         ):
             with self.subTest(operation=operation):
                 self.assert_rejected("let values = [1]\nlet view = mut values[0..1]\n" + operation + "\n", diagnostic)
@@ -213,6 +213,82 @@ compare(view, view)
         self.assert_panics("let values = [3]\nlet view = mut values[0..2]\n", "volt: invalid slice range")
         self.assert_panics("let values = [3]\nlet view = mut values[0..1]\nview[1] = 5\n",
                            "volt: slice index out of bounds")
+        self.assert_panics("let values = [3]\nlet view = mut values[0..3]\nlet got: []i64 = view[0..4]\n",
+                           "volt: invalid slice range")
+
+    def test_mut_slice_read_reslice_scoped_to_block(self):
+        self.assert_runs('''fn sum(got: []i64) -> i64:
+    let total = 0
+    for i in 0..len(got):
+        total += got[i]
+    return total
+
+let data = [10, 20, 30, 40]
+if true:
+    let buf = mut data[0..4]
+    buf[0] = 1
+    if true:
+        let n = 3
+        let got: []i64 = buf[0..n]
+        print(len(got), got[0], got[2], buf[1])
+        print(sum(got), sum(buf[1..3]))
+    buf[0] = 99
+    print(buf[0])
+print(data[0])
+''', "3 1 30 20\n51 50\n99\n99\n")
+
+    def test_mut_slice_parameter_read_reslice(self):
+        self.assert_runs('''fn parse(got: []u8) -> i64:
+    let total = 0
+    for i in 0..len(got):
+        total += got[i]
+    return total
+
+fn handle(buf: []mut u8, n: i64) -> i64:
+    let got: []u8 = buf[0..n]
+    return parse(got)
+
+let data: [8]u8 = [0, 0, 0, 0, 0, 0, 0, 0]
+if true:
+    let buf = mut data[0..8]
+    buf[0] = 7
+    buf[1] = 8
+    print(handle(buf, 2))
+    buf[0] = 100
+print(data[0])
+''', "15\n100\n")
+
+    def test_mut_slice_frozen_while_read_child_alive(self):
+        for action in (
+            "buf[0] = 5",
+            "buf[0] += 1",
+            "defer buf[1] = 9",
+        ):
+            with self.subTest(action=action):
+                self.assert_rejected('''let data = [10, 20, 30, 40]
+let buf = mut data[0..4]
+if true:
+    let got: []i64 = buf[0..2]
+    ''' + action + '''
+    print(got[0])
+''', "нельзя писать через изменяемый slice, пока из него создан slice на чтение")
+        self.assert_rejected('''let data = [10, 20, 30, 40]
+let buf = mut data[0..4]
+if true:
+    defer buf[0] = 5
+    let got: []i64 = buf[0..2]
+    print(got[0])
+''', "нельзя писать через изменяемый slice, пока из него создан slice на чтение")
+        self.assert_rejected('''fn take(view: []mut i64):
+    view[0] = 1
+
+let data = [10, 20, 30, 40]
+let buf = mut data[0..4]
+if true:
+    let got: []i64 = buf[0..2]
+    take(buf)
+    print(got[0])
+''', "изменяемый slice нельзя передать как []mut, пока из него создан slice на чтение")
 
 
     def test_tail_keeps_original_address_and_supports_empty_results(self):

@@ -450,7 +450,11 @@ Es una convención interna de VOLT, no un ABI de C.
 - **Vistas:** `data[start..end]` crea una vista `[]T` de solo lectura;
   `mut data[start..end]` crea una vista exclusiva `[]mut T` de un arreglo local.
   Durante un préstamo mutable no se permite acceder directamente al arreglo.
-  El préstamo dura hasta el final del bloque, incluido `defer`. Se puede
+  El préstamo dura hasta el final del bloque, incluido `defer`. Una vista
+  mutable admite una subvista de solo lectura: `buf[0..n]` (sin `mut`) crea
+  una `[]T` hija; mientras viva, se rechaza escribir a través de la vista
+  mutable o pasarla como `[]mut`, y la escritura se reanuda al salir del
+  bloque de la hija. Se puede
   devolver una vista de solo lectura derivada del parámetro indicado por `from`.
   Las vistas no se guardan en agregados ni se pasan por el ABI de C.
 - **Punteros:** `&place` obtiene una dirección. Desreferenciar, indexar,
