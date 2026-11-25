@@ -1653,6 +1653,19 @@ print(run())
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "inf -inf\n", ""))
         self.assert_compile_error('print(-9223372036854775809)\n', "main.volt:1: ошибка: целочисленный литерал выходит за диапазон i64")
 
+    def test_deep_expressions_fail_cleanly_instead_of_crashing(self):
+        # 5000 nested parentheses used to overflow the parser stack (segfault).
+        parens = 'print(' + '(' * 5000 + '1' + ')' * 5000 + ')\n'
+        self.assert_compile_error(parens, "слишком глубокая вложенность выражения")
+        # A flat 6000-term chain used to overflow the semantic stack (segfault)
+        # before the code generator could enforce its temp-slot limit.
+        chain = 'print(1' + '+1' * 6000 + ')\n'
+        self.assert_compile_error(chain, "слишком глубокое выражение в одной инструкции")
+        # Moderate nesting still compiles and runs.
+        ok = 'print(' + '(' * 400 + '1' + ')' * 400 + ')\n'
+        result = self.compile_run(ok)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "1\n", ""))
+
     def test_float_unary_minus_flips_runtime_zero_sign(self):
         result = self.compile_run('''fn negate64(value: f64) -> f64:
     return -value

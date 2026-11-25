@@ -35,6 +35,7 @@ unsafe fn ccs_new(v_progs: i64, v_entry_name: i64) -> i64:
     cv_field(v_self, "frozen_mut_slots", cv_vector(CV_SET))
     cv_field(v_self, "temp_slice_releases", cv_vector(CV_LIST))
     cv_field(v_self, "defer_action_depth", 0)
+    cv_field(v_self, "tf_depth", 3)
     cv_field(v_self, "buffer_borrow_file", cc_path_join(cc_std, cv_text("borrow_buffer.volt")))
     cv_field(v_self, "owned_buffer_file", cc_path_join(cc_std, cv_text("owned_buffer.volt")))
     cv_field(v_self, "fs_file", cc_path_join(cc_std, cv_text("fs.volt")))
@@ -1624,6 +1625,7 @@ unsafe fn ccs_setup_fn(v_self: i64, v_fn: i64) -> i64:
     cv_field(v_self, "frozen_mut_slots", cv_vector(CV_SET))
     cv_field(v_self, "temp_slice_releases", cv_vector(CV_LIST))
     cv_field(v_self, "defer_action_depth", 0)
+    cv_field(v_self, "tf_depth", 3)
     let items_7: i64 = cv_vector(CV_LIST)
     cv_field(v_fn, "loop_stack", items_7)
     return 0
@@ -1823,6 +1825,13 @@ unsafe fn ccs_always_return(v_self: i64, v_stmts: i64) -> i64:
     return CV_FALSE
 
 unsafe fn ccs_tf(v_self: i64, v_e: i64, v_expected: i64) -> i64:
+    # Flat expression chains (1+1+1+...) build a deep AST without any parser
+    # recursion; bound the type-checking recursion before it overflows the
+    # stack. Matches the temp-slot limit of the code generator in spirit.
+    if cv_less(cv_i(4096), cv_getkey(v_self, "tf_depth")):
+        cc_error(cv_text("слишком глубокое выражение в одной инструкции"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+    cv_field(v_self, "tf_depth", cv_add(cv_getkey(v_self, "tf_depth"), 11))
+    defer cv_field(v_self, "tf_depth", cv_sub(cv_getkey(v_self, "tf_depth"), 11))
     if cv_classes(v_e, "Call"):
         # Constructors compare this hint against the resolved, not the source, name.
         if cv_classes(v_expected, "TWrapper") or cv_classes(v_expected, "TStruct"):

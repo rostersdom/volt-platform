@@ -308,6 +308,7 @@ unsafe fn ccp_new(v_src: i64, v_file: i64) -> i64:
     cv_field(v_self, "toks", cc_lex(v_src, v_file))
     cv_field(v_self, "i", 3)
     cv_field(v_self, "depth", 3)
+    cv_field(v_self, "expr_depth", 3)
     return v_self
 
 unsafe fn ccp_peek(v_self: i64) -> i64:
@@ -1306,6 +1307,13 @@ unsafe fn ccp_parse_mul(v_self: i64) -> i64:
     return v_e
 
 unsafe fn ccp_parse_unary(v_self: i64) -> i64:
+    # Every nesting level (parentheses, call arguments, unary operators) passes
+    # through here; bound the recursion so a hostile source cannot overflow
+    # the compiler stack.
+    if cv_less(cv_i(512), cv_getkey(v_self, "expr_depth")):
+        cc_error(cv_text("слишком глубокая вложенность выражения"), cv_getkey(v_self, "file"), cv_subscript(ccp_peek(v_self), cv_text("line")))
+    cv_field(v_self, "expr_depth", cv_add(cv_getkey(v_self, "expr_depth"), 11))
+    defer cv_field(v_self, "expr_depth", cv_sub(cv_getkey(v_self, "expr_depth"), 11))
     let v_t: i64 = 0
     let v_x: i64 = 0
     if cv_truth(ccp_atp(v_self, cv_text("-"))):
