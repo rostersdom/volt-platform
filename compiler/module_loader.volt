@@ -59,6 +59,10 @@ unsafe fn cc_load_modules(entry: i64, links: i64) -> i64:
     let ordered: i64 = cv_list()
     let names: i64 = cv_split(cv_text("io str"), 0, 0)
     for i in 0..cv_len(names):
+        # A stdlib module compiles standalone: the prelude does not self-import.
+        let candidate: i64 = cv_cat(cv_at(names, i), cv_text(".volt"))
+        if cv_equal(cc_abspath(cc_path_join(cc_dirname(entry), candidate)), entry): continue
+        if cv_equal(cc_path_join(cc_std, candidate), entry): continue
         let path: i64 = cc_find_module(entry, cv_at(names, i))
         cc_order_module(cc_discover(path, modules, sources, active, 0), ordered)
     cc_order_module(entry_program, ordered)

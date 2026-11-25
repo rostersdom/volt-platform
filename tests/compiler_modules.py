@@ -56,6 +56,13 @@ class Namespaces(unittest.TestCase):
         return subprocess.run([VOLT, path, "-o", self.tmp / "program"], cwd=self.tmp,
                               env=self.env, capture_output=True, text=True, timeout=15)
 
+    def test_stdlib_prelude_module_compiles_standalone(self):
+        # Compiling vstd/io.volt itself used to fail: the automatic prelude
+        # tried to import "io" into io.volt and reported "модуль не найден".
+        result = subprocess.run([VOLT, ROOT / "vstd" / "io.volt", "-o", self.tmp / "io_standalone"],
+                                cwd=self.tmp, env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_exports_compose_with_sum_types_and_eq(self):
         result = self.build('''module demo
 use fs, other as network, legacy
