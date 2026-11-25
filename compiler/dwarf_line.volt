@@ -1,10 +1,21 @@
 use asm_object
 
-# The per-function line program always starts at line 1, so all deltas are nonnegative.
+# Line programs start at line 1; statement lines can move backwards, so the
+# signed path must encode negative deltas correctly.
 unsafe fn dwarf_leb(out: ptr<ByteBuffer>, value: i64, signed: bool):
-    let limit: i64 = 128
-    if signed: limit = 64
-    while value >= limit:
+    if signed:
+        # Signed LEB128: sign-extending shift, stop when the sign bit fits.
+        let more: bool = true
+        while more:
+            let byte: i64 = value & 127
+            value >>= 7
+            if (value == 0 and byte & 64 == 0) or (value == -1 and byte & 64 != 0):
+                more = false
+            else:
+                byte = byte | 128
+            cc_bytes_word(out, byte as u64, 1)
+        return
+    while value >= 128:
         cc_bytes_word(out, ((value & 127) | 128) as u64, 1)
         value >>= 7
     cc_bytes_word(out, value as u64, 1)
@@ -38,7 +49,8 @@ unsafe fn dwarf_line_table(out: ptr<ByteBuffer>, rows: i64, entry: i64, text: i6
     cc_bytes_word(out, 0, 1)  # end of file table
     cc_bytes_set(out, header - 4, (out.len - header) as u64, 4)
 
-    # shortcut: one sequence per source function until the lowerer emits statement-level locations.
+    # One sequence per function: the prologue keeps the declaration line and each
+    # statement marker adds a row, so debuggers step through statements with `next`.
     for i in 0..cv_len(rows):
         let row: ptr<AsmSourceFunction> = cv_at(rows, i) as ptr<AsmSourceFunction>
         let file_index: i64 = cv_index(cv_get(files, row.file, 0))
@@ -51,8 +63,25 @@ unsafe fn dwarf_line_table(out: ptr<ByteBuffer>, rows: i64, entry: i64, text: i6
             cc_bytes_word(out, 3, 1)  # DW_LNS_advance_line
             dwarf_leb(out, row.line - 1, true)
         cc_bytes_word(out, 1, 1)  # DW_LNS_copy
+        let pc: i64 = row.start
+        let line: i64 = row.line
+        for j in 0..cv_len(row.marks):
+            let mark: i64 = cv_at(row.marks, j)
+            let mark_line: i64 = cv_index(cv_at(mark, 0))
+            let mark_pc: i64 = cv_index(cv_at(mark, 1))
+            if mark_pc < pc or mark_pc >= row.end: continue
+            if mark_pc == pc and mark_line == line: continue
+            if mark_pc > pc:
+                cc_bytes_word(out, 2, 1)  # DW_LNS_advance_pc
+                dwarf_leb(out, mark_pc - pc, false)
+                pc = mark_pc
+            if mark_line != line:
+                cc_bytes_word(out, 3, 1)  # DW_LNS_advance_line
+                dwarf_leb(out, mark_line - line, true)
+                line = mark_line
+            cc_bytes_word(out, 1, 1)  # DW_LNS_copy
         cc_bytes_word(out, 2, 1)  # DW_LNS_advance_pc to exclusive end of function
-        dwarf_leb(out, row.end - row.start, false)
+        dwarf_leb(out, row.end - pc, false)
         cc_bytes_word(out, 0x010100, 3)  # DW_LNE_end_sequence
     cc_bytes_set(out, start, (out.len - start - 4) as u64, 4)
 

@@ -49,6 +49,11 @@ unsafe fn cc_same_file(a: i64, b: i64) -> bool:
 unsafe fn cc_lines(buf: ptr<ByteBuffer>, code: ptr<AsmObject>, lines: i64, listing: bool):
     for i in 0..cv_len(lines):
         let line: i64 = cv_at(lines, i)
+        if cv_kind(line) == CV_TUPLE:
+            # Debug statement marker: record (source line, text offset), emit nothing.
+            if code != (0 as ptr<AsmObject>) and code.debug_marks != 0:
+                cv_push(code.debug_marks, cv_pair(cv_at(line, 1), cv_i(asm_offset(code))))
+            continue
         if code != (0 as ptr<AsmObject>): x_encode(code, line)
         if listing:
             cc_bytes_append(buf, cv_cptr(line), cv_len(line))
@@ -56,6 +61,8 @@ unsafe fn cc_lines(buf: ptr<ByteBuffer>, code: ptr<AsmObject>, lines: i64, listi
 
 unsafe fn cc_lower(state: i64, code: ptr<AsmObject>, listing: ptr<ByteBuffer>, keep_listing: bool):
     let emitter: i64 = cce_new(state)
+    if code != (0 as ptr<AsmObject>) and code.debug_functions != 0:
+        cv_field(emitter, "dbg_lines", cv_i(1))
     if keep_listing:
         let header: string = ".intel_syntax noprefix\n.text\n.align 16\n"
         cc_bytes_append(listing, header as ptr<char>, str_len(header))
@@ -183,7 +190,9 @@ unsafe fn cc_build(opts: ptr<CCOptions>) -> i64:
     let libraries: i64 = elf_libraries(links, manifest)
     let obj: AsmObject
     asm_setup(&obj)
-    if opts.debug: obj.debug_functions = cv_list()
+    if opts.debug:
+        obj.debug_functions = cv_list()
+        obj.debug_marks = cv_list()
     cc_lower(state, &obj, &listing, opts.listing != 0)
     cc_runtime(&obj)
     let output: ByteBuffer

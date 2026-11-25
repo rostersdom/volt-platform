@@ -149,7 +149,7 @@ guarantees of this version.
 | Command | Result |
 | --- | --- |
 | `./volt prog.volt -o prog` | Write a Linux ELF executable. `--out` is an alias for `-o`. |
-| `./volt prog.volt -g -o prog` | Add DWARF 4 mappings from named functions to their declaration lines. |
+| `./volt prog.volt -g -o prog` | Add DWARF 4 line mappings: function declarations and individual statements, so gdb can step with `next`. |
 | `./volt prog.volt --run` | Compile and return the program's exit status; remove the temporary executable when `-o` is not supplied. |
 | `./volt prog.volt --emit-asm` | Emit the assembly listing only; the default name is derived from the source path. |
 | `./volt prog.volt -S prog.s -o prog` | Write both an assembly listing and an ELF executable. `--asm-file` is an alias for `-S`. |
@@ -162,8 +162,9 @@ an external assembler or linker.
 
 Errors in loaded sources include a bounded excerpt and a byte column when
 known. `-g` works with ELF output only. It also maps the startup wrapper to
-the first executable statement in the entry file, when present. It does not
-map each statement or describe local variables and types.
+the first executable statement in the entry file, when present. Statements map
+to their own lines (including in imported modules), so a debugger can step
+line by line; local variables and types are not described yet.
 
 ### 1. Bindings, types, and conversions
 

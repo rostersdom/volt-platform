@@ -13,6 +13,7 @@ struct AsmObject:
     names: i64
     fixups: i64
     debug_functions: i64
+    debug_marks: i64
 
 struct AsmFixup:
     section: i64
@@ -28,6 +29,7 @@ struct AsmSourceFunction:
     line: i64
     start: i64
     end: i64
+    marks: i64
 
 unsafe fn asm_setup(code: ptr<AsmObject>):
     code.names = cv_dict()
@@ -95,13 +97,16 @@ unsafe fn asm_label(code: ptr<AsmObject>, name: i64):
     cv_set(code.names, name, cv_pair(cv_i(code.section), cv_i(asm_offset(code))))
 
 unsafe fn asm_source_function(code: ptr<AsmObject>, name: i64, file: i64, line: i64):
+    # Statement markers accumulate per function; consume them even when no row is recorded.
+    let marks: i64 = code.debug_marks
+    code.debug_marks = cv_list()
     let location: i64 = cv_get(code.names, name, 0)
     if file == 0 or line < 1 or location == 0 or cv_index(cv_at(location, 0)) != ASM_TEXT: return
     let start: i64 = cv_index(cv_at(location, 1))
     let end: i64 = code.sections[ASM_TEXT].len
     if end <= start: return
     let fn_range: ptr<AsmSourceFunction> = cv_alloc(sizeof(AsmSourceFunction)) as ptr<AsmSourceFunction>
-    fn_range[0] = AsmSourceFunction(file, line, start, end)
+    fn_range[0] = AsmSourceFunction(file, line, start, end, marks)
     cv_push(code.debug_functions, fn_range as i64)
 
 unsafe fn asm_fixup(code: ptr<AsmObject>, name: i64, width: i64, relative: bool, addend: i64):

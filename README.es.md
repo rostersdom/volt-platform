@@ -152,7 +152,7 @@ no garantías adicionales de esta versión.
 | Comando | Resultado |
 | --- | --- |
 | `./volt prog.volt -o prog` | Genera un ejecutable ELF. `--out` equivale a `-o`. |
-| `./volt prog.volt -g -o prog` | Añade un mapa DWARF 4 de las funciones nombradas a sus líneas de declaración. |
+| `./volt prog.volt -g -o prog` | Añade un mapa DWARF 4 de líneas: declaraciones de funciones y sentencias, para depurar paso a paso con `next`. |
 | `./volt prog.volt --run` | Compila y devuelve el estado del programa. Elimina el ejecutable temporal si no se indica `-o`. |
 | `./volt prog.volt --emit-asm` | Solo escribe el listado ensamblador, cuyo nombre por defecto se deriva del código fuente. |
 | `./volt prog.volt -S prog.s -o prog` | Escribe el listado ensamblador y el ejecutable. `--asm-file` equivale a `-S`. |
@@ -166,7 +166,8 @@ no necesita ensamblador ni enlazador externos.
 Los errores en archivos cargados muestran un fragmento acotado y la columna
 en bytes si se conoce. `-g` requiere salida ELF. También vincula la función de
 arranque a la primera sentencia ejecutable del archivo principal, si existe.
-No asigna direcciones a cada sentencia ni describe variables locales o tipos.
+Cada sentencia (incluidas las de módulos importados) tiene su línea, así que el
+depurador puede avanzar paso a paso; aún no describe variables locales ni tipos.
 
 ### 1. Variables, tipos y conversiones
 

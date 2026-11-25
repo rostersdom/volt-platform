@@ -18,6 +18,7 @@ unsafe fn cce_new(v_sem: i64) -> i64:
     cv_field(v_self, "f_cache", cv_dict())
     cv_field(v_self, "cur", 0)
     cv_field(v_self, "cur_name", 0)
+    cv_field(v_self, "dbg_lines", 0)
     let items_5: i64 = cv_vector(CV_LIST)
     cv_field(v_self, "slots", items_5)
     cv_field(v_self, "lsize", 3)
@@ -2529,6 +2530,12 @@ unsafe fn cce_emit_cleanup_scopes(v_self: i64, v_count: i64) -> i64:
     return 0
 
 unsafe fn cce_emit_stmt(v_self: i64, v_st: i64) -> i64:
+    if cv_getkey(v_self, "dbg_lines") != 0:
+        # Statement boundary marker for the DWARF line program; cc_lines turns it
+        # into a (line, offset) pair and never encodes or lists it.
+        let v_dbg_line: i64 = cv_get(v_st, cv_text("line"), 0)
+        if v_dbg_line != 0 and cv_index(v_dbg_line) >= 1:
+            cv_push(cv_getkey(v_self, "text"), cv_pair(cv_text(".voltline"), v_dbg_line))
     cce_begin_stmt(v_self)
     if cv_classes(v_st, "LetStmt"):
         cce_st_let(v_self, v_st)

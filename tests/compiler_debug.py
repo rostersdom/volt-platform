@@ -175,10 +175,44 @@ class CompilerDebug(unittest.TestCase):
         debug = self.build(source, "-g")
         result = self.invoke(gdb, "-nx", "-nh", "-q", "-batch", "-iex", "set auto-load off",
                              "-ex", "info line VOLT_f_debug_entry_main",
-                             "-ex", "break debug_entry.volt:3", debug)
+                             "-ex", "break debug_entry.volt:3",
+                             "-ex", "break debug_entry.volt:4", debug)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f'Line 3 of "{source}" starts at address ', result.stdout)
-        self.assertRegex(result.stdout, r"Breakpoint 1 at 0x[0-9a-f]+: file .*debug_entry\.volt, line 3\.")
+        # A breakpoint on the declaration line skips the prologue and lands on
+        # the first statement; a statement line resolves exactly.
+        self.assertRegex(result.stdout, r"Breakpoint 1 at 0x[0-9a-f]+: file .*debug_entry\.volt, line 4\.")
+        self.assertRegex(result.stdout, r"Breakpoint 2 at 0x[0-9a-f]+: file .*debug_entry\.volt, line 4\.")
+
+    def test_gdb_next_steps_through_statements(self):
+        gdb = self.tool("gdb")
+        self.source("fn step_add(x: i64, y: i64) -> i64:\n"
+                    "    let total: i64 = x + y\n"
+                    "    return total\n", "step_dependency.volt")
+        source = self.source("use step_dependency\n"
+                             "\n"
+                             "fn main() -> i64:\n"
+                             "    let a: i64 = step_add(2, 3)\n"
+                             "    let b: i64 = a * 2\n"
+                             "    print(b)\n"
+                             "    return 0\n", "step_entry.volt")
+        debug = self.build(source, "-g")
+        commands = ["break VOLT_f_step_entry_main", "break step_dependency.volt:2", "run"]
+        commands += ["next"] * 5
+        args = [gdb, "-nx", "-nh", "-q", "-batch", "-iex", "set auto-load off"]
+        for command in commands:
+            args += ["-ex", command]
+            if command in ("run", "next"):
+                args += ["-ex", "frame 0"]
+        result = self.invoke(*args, debug)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        stopped = re.findall(r"^#0\s+.*?\sat\s+\S*/(step_\w+\.volt):(\d+)$", result.stdout, re.M)
+        self.assertEqual(stopped, [("step_entry.volt", "4"),
+                                   ("step_dependency.volt", "2"),
+                                   ("step_dependency.volt", "3"),
+                                   ("step_entry.volt", "5"),
+                                   ("step_entry.volt", "6"),
+                                   ("step_entry.volt", "7")], result.stdout)
 
 
 if __name__ == "__main__":
