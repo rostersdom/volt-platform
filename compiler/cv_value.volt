@@ -218,7 +218,7 @@ unsafe fn cv_type_eq(a: i64, b: i64, name: i64) -> bool:
         return cv_equal(cv_getkey(a, "params"), cv_getkey(b, "params")) and cv_equal(cv_getkey(a, "result"), cv_getkey(b, "result"))
     if cv_name(name, "TStruct") or cv_name(name, "TWrapper"):
         return cv_equal(cv_getkey(a, "name"), cv_getkey(b, "name")) and cv_equal(cv_getkey(a, "args"), cv_getkey(b, "args"))
-    if cv_name(name, "TEnum") or cv_name(name, "TTypeVar"): return cv_equal(cv_getkey(a, "name"), cv_getkey(b, "name"))
+    if cv_name(name, "TEnum") or cv_name(name, "TTypeVar") or cv_name(name, "TTaggedEnum"): return cv_equal(cv_getkey(a, "name"), cv_getkey(b, "name"))
     return cv_name(name, "TBool") or cv_name(name, "TString")
 
 unsafe fn cv_numeric(k: i64) -> bool:

@@ -82,7 +82,7 @@ unsafe fn cc_display(t: i64) -> i64:
     if t == 0: return cv_text("void")
     if cv_name(kind, "TBool"): return cv_text("bool")
     if cv_name(kind, "TString"): return cv_text("string")
-    if cv_name(kind, "TTypeVar") or cv_name(kind, "TEnum"): return cv_getkey(t, "name")
+    if cv_name(kind, "TTypeVar") or cv_name(kind, "TEnum") or cv_name(kind, "TTaggedEnum"): return cv_getkey(t, "name")
     if cv_name(kind, "TInt"):
         let name: i64 = cv_getkey(t, "alias")
         if name != 0: return name
@@ -104,7 +104,7 @@ unsafe fn cc_display(t: i64) -> i64:
         return cv_cat(desc, cv_text(">"))
     if cv_name(kind, "TStruct") or cv_name(kind, "TWrapper"):
         let args: i64 = cv_getkey(t, "args")
-        let name: i64 = cv_getkey(t, "name")
+        let name: i64 = cv_get(t, cv_text("source_name"), cv_getkey(t, "name"))
         if cv_len(args) == 0: return name
         return cv_cat(name, cc_bracket("<", cc_display_args(args), ">"))
     return kind

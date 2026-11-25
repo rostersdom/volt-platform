@@ -108,6 +108,11 @@ or `nvcc` to build. The base compiler and browser do not require CUDA.
 
 [Russian language reference](docs/language.md) · [Roadmap](ROADMAP.md) · [MIT license](LICENSE)
 
+Core extensions: [modules and `pub`](docs/modules.md), [owned buffers](docs/owned-buffer.md),
+[lexical slice borrowing](docs/slice-borrows.md), [`TextView`](docs/text-view.md),
+[compound `Option`/`Result`](docs/option-result-payloads.md), [payload enums](docs/enum-payloads.md),
+[`T: Eq`](docs/language.md#ограничение-t-eq) and [small C records](docs/language.md#структуры-по-значению-в-c-abi).
+
 ## VOLT 0.3.0 language specification
 
 This describes the implemented language and its reference compiler, targeting
@@ -181,8 +186,9 @@ print(count, ratio, byte, LIMIT)
 | `fnptr<(A, B) -> R>` | 8 | Typed native function address for C callbacks |
 | `[N]T` | `N × sizeof(T)` | Fixed-size array |
 | `[]T` | 16 | Read-only slice: pointer and element count |
+| `[]mut T` | 16 | Mutable slice with exclusive lexical access |
 | Structure type | Depends on its fields | Named aggregate with natural alignment |
-| Enum type | 8 | Nominal `i64` discriminant, no payload |
+| Enum type | 8 without payload | Nominal `i64` discriminant and optional variant payload |
 | `Option<T>`, `Result<T,E>` | Depends on the payload | Built-in, inline tagged values |
 
 The aliases are `int = i64`, `uint = u64`, and `float = f64`. A local `let`
@@ -192,7 +198,7 @@ zero-initialized. A `const` is immutable, at module or local scope. Its scalar
 initializer is evaluated at compile time: supported expressions include
 literals of eligible types, arithmetic, casts, enum variants, `sizeof`,
 `alignof`, and earlier constants. Ordinary function calls are not const evaluation.
-Constants can have integer, floating-point, `bool`, `char`, or enum types,
+Constants can have integer, floating-point, `bool`, `char`, or payload-free enum types,
 not `string`, pointers, or aggregates.
 
 `as` performs explicit casts. Initialization, assignment, ordinary declared
@@ -290,19 +296,19 @@ in its body and can only be called in an unsafe context.
   through implicit pointer arguments and copy them into local storage. A hidden
   caller-owned result pointer (`sret`) uses the first integer register, and the
   result is saved before `defer` runs. Arrays cannot be passed or returned by
-  value; a slice can be passed but not returned.
+  value. A read-only slice can be returned with `-> []T from input`.
 - **Generic functions** such as `fn identity<T>(value: T) -> T:` are specialised
   at compile time for each inferred type combination. Inference uses arguments,
   including type arguments of nested structures and pointers. Conflicting types
-  for the same parameter are rejected; generic foreign/assembly functions are
-  not implemented.
+  for the same parameter are rejected; `T: Eq` is checked at the call site.
+  Generic foreign/assembly functions are not implemented.
 - **C FFI:** `unsafe extern fn` declares an external symbol with a fixed
   signature. `link "-lc"` requests a shared ELF library. A C-facing call uses
-   supported scalar and pointer types. A VOLT enum uses `i64`, not C's enum
-   representation. Pass aggregate data via pointers to
-  caller-owned storage; the VOLT aggregate ABI is not the C ABI. Arrays,
-  structures, slices, and tagged values by value, variadic calls, and automatic
-  VOLT function exports are not supported in foreign signatures.
+  supported scalar and pointer types. A payload-free VOLT enum uses `i64`, not
+  C's enum representation. Pass aggregate data via pointers to caller-owned
+  storage, except that `extern struct` opts into naturally aligned scalar-field
+  structs of at most 16 bytes for direct `extern fn` calls. Other aggregates by
+  value, variadic calls and automatic exports are unsupported.
 - **Callbacks:** `fnptr<(A, B) -> R>` or `fnptr<(A, B)>` (no return value)
    describes a supported scalar C signature. In `unsafe`, pass
    `callback(named_function)` to C. The compiler checks the signature; excess
@@ -373,31 +379,31 @@ print(item.index, item_value(item), sizeof(Item<u32>))
 An `enum` stores an `i64` tag. If the first variant has no explicit value, it
 gets zero. Each later implicit value is the previous discriminant plus one;
 an explicit declaration like `Green = 4` changes that sequence. Use
-`Name.Variant`, compare only the
-same enum with `==`/`!=`, or explicitly convert a variant to `i64`. Enum
-variants do not carry data; enums used with `match` need unique discriminants.
+`Name.Variant` for a variant without data; plain enums can be compared or cast
+to `i64`. Variants such as `Number(i64)` carry one scalar value and are
+constructed with `Token.Number(42)`. Discriminants must be unique.
 
 `match` is a statement, not an expression. It evaluates the subject once and
-requires at least one arm. Its patterns are `_`, `Enum.Variant`, `None`,
-`Some(name)`, `Ok(name)`, and `Err(name)`. Every variant must be covered exactly
-once; `_` covers the remaining variants and is last. Other types, overlapping
+requires at least one arm. Its patterns include `_`, `Enum.Variant`,
+`Enum.Variant(name)`, `None`, `Some(name)`, `Ok(name)`, and `Err(name)`. Every
+variant must be covered exactly once; `_` covers the remaining variants and is
+last. Other types, overlapping
 patterns, guards, and structural destructuring are unsupported. Each binding
 is an immutable copy visible only in that arm. For `Option`/`Result`, match a
-local value or parameter rather than a temporary constructor.
+local value, parameter, or function result rather than a direct constructor.
 
 `Option<T>` has `None` or `Some(T)`. `Result<T,E>` has `Ok(T)` or `Err(E)`.
 Use an explicit type or sufficient context to determine both type arguments
 when a constructor alone is ambiguous. For example, `let r: Result<i64, i32> =
-Err(22 as i32)` has a payload of exactly `i32`. These built-ins accept integers,
-floats, `bool`, `char`, enums, strings, or raw pointers without nested wrappers;
-they do not accept arrays, structures, slices, or nested tagged values as
-payloads. They can be local values, ordinary VOLT parameters, and results, but
+Err(22 as i32)` has a payload of exactly `i32`. Payloads may be scalars, copyable
+structures, enums, or nested `Option`/`Result`, but not arrays or slices by value
+or move-only values. They can be local values, ordinary VOLT parameters, and results, but
 not globals, constants, fields, array elements, or zero-initialized bindings.
 Reassignment of a local or parameter copies the same tagged type after evaluating
 the right-hand side once; unused payload bytes are cleared.
 
 The postfix `?` extracts the successful payload. `None` or `Err` returns from
-the enclosing ordinary VOLT function, running its registered `defer` actions.
+the enclosing ordinary VOLT function, running its registered `defer` actions and drops.
 With `Option`, the enclosing return type must be the same `Option<T>`. With
 `Result`, the error type must match exactly, but the success types can differ.
 `?` may appear in a nested expression and is not available in `extern` or
@@ -435,17 +441,12 @@ stable C type layout or call contract.
   element. Arrays of the same type can be copied;
   use slices or pointers to pass their data to a function. Local arrays use
   stack storage.
-- **Slices:** `data[start..end]` creates a borrowed read-only `[start, end)` view
-  of a local array. Bounds are signed integers and must satisfy
-  `0 <= start <= end <= len(data)`; an empty slice is valid. A slice stores a
-  pointer and element count, not capacity, and has 8-byte alignment. Indexing
-  and `len` use that count. Overlapping read-only slices and reads of the array
-  are allowed. Writes through a slice or directly into the borrowed array are
-  rejected until the borrowing block and its `defer` actions finish. A slice
-  binding cannot be copied through `let` or reassigned. Taking a raw address
-  from a slice requires `unsafe`. No mutable slices, slice of a slice,
-  implicit array-to-slice conversion, slice returns, aggregate/global slice
-  storage, or slice C ABI. There is no last-use analysis or raw-pointer lifetime checking.
+- **Slices:** `data[start..end]` makes a checked read-only `[]T` view;
+  `mut data[start..end]` creates an exclusive `[]mut T` of a local array.
+  Several read-only views may coexist; a mutable view prevents all direct
+  array access until block exit, including `defer`. Read-only views can be
+  re-sliced or returned from an explicit parameter source. Slice bindings
+  cannot be reassigned or stored in aggregates, and do not cross the C ABI.
 - **Raw pointers:** `&place` produces a pointer to an addressable target.
   Dereference, indexing, accessing a field through a pointer, pointer
   arithmetic, and raw casts require `unsafe`. `p + i`, `i + p`, and `p - i`
@@ -457,6 +458,8 @@ stable C type layout or call contract.
   literals cannot contain NUL. The shared arena for dynamic concatenation and
   repetition is 1 MiB per process; exhaustion traps. This is not a cap on
   explicit byte buffers. Use an explicit unsafe cast at a C string boundary.
+  [`TextView`](docs/text-view.md) is a separate length-tagged view for O(1)
+  indexing and zero-copy subranges, with explicit C-string conversion.
 - **Buffers:** `ByteBuffer` stores bytes, including NUL, with length and
   capacity. `Buffer<T>` does the same for typed elements. Start from zeroed
   storage, keep one owner, free it explicitly (often with `defer`), and do not
@@ -470,6 +473,8 @@ stable C type layout or call contract.
   has checked owner handles and read-only views that end with their block.
   Mutations and release through any owner alias are rejected while a reader is
   active. The owner still requires explicit release; element copies are shallow.
+- **Single ownership:** [`OwnedBuffer`](docs/owned-buffer.md) moves through
+  `let`, calls and returns. Live owners drop once after their block's `defer`.
 
 ```volt
 fn sum(values: []i64) -> i64:
@@ -489,8 +494,10 @@ print(sum(middle)) # 50
 then under the compiler's installation root in `vstd/`, `browser/modules/`,
 `gpu/modules/`, and `tools/modules/`, in that order. Module names do not depend
 on the source directory layout. A module is loaded once; dependencies initialise before
-the modules that import them. Cycles are errors. Imported declarations share
-one namespace; there are no module aliases or visibility modifiers. `io` and
+the modules that import them. Cycles are errors. Files without a `module NAME`
+header retain flat imports. A namespaced file exports declarations with `pub`,
+and `use NAME [as ALIAS]` makes them available by qualified names such as
+`fs.open`. Public record constructors and fields remain private. `io` and
 `str` are auto-imported. A module can declare `const`, global `let` with a
 constant initializer, and top-level calls for initialization.
 
@@ -534,11 +541,12 @@ compile-time search paths. It does not download packages or run build scripts.
 
 Linux x86-64 and the documented ABI subset are the only supported target.
 Runtime checks on indexing and arithmetic do not make raw pointers and FFI
-memory-safe. `unsafe` is a caller obligation, not a sandbox. There is no general
-borrow checker, automatic destruction, or garbage collector. User-defined
-tagged unions, traits, const generics, closures, tuple types, macros, the VOLT
-language feature `async`/`await`, and arbitrary inline assembly blocks are not
-implemented. JavaScript promises and GPU dispatch are separate integrations.
+memory-safe. `unsafe` is a caller obligation, not a sandbox. Slice borrow checks
+are lexical, and automatic destruction is limited to `OwnedBuffer`; ordinary
+`Buffer<T>` still requires manual release. Traits, const generics, closures,
+tuple types, macros, `async`/`await`, arbitrary inline assembly blocks, and a
+garbage collector are not implemented. JavaScript promises and GPU dispatch
+are separate integrations.
 
 The language behaviour is exercised by the [golden tests](tests/run.py),
 [compiler regression tests](tests/regressions.py), and

@@ -161,12 +161,9 @@ print(len(middle), middle[0], middle[1], sum(middle))
 ''')
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "2 20 30 50\n", ""))
 
-    def test_slice_invalid_range_panics_and_mutable_slice_rejected(self):
+    def test_slice_invalid_range_panics(self):
         result = self.compile_run('let values: [2]i64 = [1, 2]\nlet bad: []i64 = values[2..1]\n')
         self.assertEqual((result.returncode, result.stderr), (1, "volt: invalid slice range\n"))
-        self.assert_compile_error('''fn bad(values: []mut i64):
-    return
-''', "изменяемый slice пока не реализован")
 
     def test_array_write_while_slice_active_is_rejected(self):
         self.assert_compile_error('''let values: [2]i64 = [1, 2]

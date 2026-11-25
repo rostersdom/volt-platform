@@ -78,46 +78,30 @@ unsafe fn cc_TStruct(v_name: i64, v_args: i64) -> i64:
     return v_self
 
 unsafe fn cc_TWrapper(v_name: i64, v_args: i64) -> i64:
-    let v_payload: i64 = 0
-    let v_pa: i64 = 0
     let v_self: i64 = cv_node("TWrapper")
     cv_field(v_self, "name", v_name)
     cv_field(v_self, "args", cv_astuple(v_args))
-    let choice_1: i64 = 0
-    if (cv_equal(v_name, cv_text("Option"))):
-        choice_1 = cv_pair(cv_text("None"), cv_text("Some"))
-    else:
-        choice_1 = cv_pair(cv_text("Ok"), cv_text("Err"))
-    cv_field(v_self, "variant_names", choice_1)
-    let choice_2: i64 = 0
-    if (cv_equal(v_name, cv_text("Option"))):
-        choice_2 = cv_pair(cv_subscript(v_args, 3), 0)
-    else:
-        choice_2 = cv_astuple(v_args)
-    cv_field(v_self, "payload_types", choice_2)
-    let seq_4: i64 = cv_getkey(v_self, "payload_types")
-    for index_3 in 0..cv_len(seq_4):
-        v_payload = cv_at(seq_4, index_3)
-        if ((not (v_payload == 0)) and (not (cv_truth(cc_isscalar(v_payload))) or cv_classes(v_payload, "TWrapper"))):
-            cc_error(cv_text("payload Option/Result должен быть скалярным типом"), 0, 11)
-            return 0
-    let collect_5: i64 = cv_vector(CV_LIST)
-    let seq_7: i64 = cv_getkey(v_self, "payload_types")
-    for index_6 in 0..cv_len(seq_7):
-        let t_8: i64 = cv_at(seq_7, index_6)
-        if not ((not (t_8 == 0))): continue
-        cv_push(collect_5, cc_type_align(t_8))
-    v_pa = cv_maximum(collect_5, 0)
-    cv_field(v_self, "payload_off", cc_base_align(67, v_pa))
-    cv_field(v_self, "align", cv_max(67, v_pa))
-    let collect_9: i64 = cv_vector(CV_LIST)
-    let seq_11: i64 = cv_getkey(v_self, "payload_types")
-    for index_10 in 0..cv_len(seq_11):
-        let t_12: i64 = cv_at(seq_11, index_10)
-        if not ((not (t_12 == 0))): continue
-        cv_push(collect_9, cc_type_size(t_12))
-    cv_field(v_self, "size", cc_base_align(cv_add(cv_getkey(v_self, "payload_off"), cv_maximum(collect_9, 0)), cv_getkey(v_self, "align")))
+    let depth: i64 = cv_i(0)
+    for i in 0..cv_len(v_args): depth = cv_max(depth, cc_type_depth(cv_at(v_args, i)))
+    cv_field(v_self, "type_depth", cv_add(depth, cv_i(1)))
     return v_self
+
+unsafe fn cc_sum_layout(typ: i64, payloads: i64, file: i64, line: i64):
+    let pa: i64 = cv_i(1)
+    let ps: i64 = cv_i(0)
+    for i in 0..cv_len(payloads):
+        let payload: i64 = cv_at(payloads, i)
+        if payload == 0: continue
+        pa = cv_max(pa, cc_type_align(payload))
+        ps = cv_max(ps, cc_type_size(payload))
+    let offset: i64 = cc_base_align(cv_i(8), pa)
+    let alignment: i64 = cv_max(cv_i(8), pa)
+    let size: i64 = cc_base_align(cv_add(offset, ps), alignment)
+    if cv_less(cv_i(2147483647), size):
+        cc_error(cv_text("размер tagged value превышает лимит x86-64"), file, line)
+    cv_field(typ, "payload_off", offset)
+    cv_field(typ, "align", alignment)
+    cv_field(typ, "size", size)
 
 unsafe fn cc_TEnum(v_name: i64, v_values: i64) -> i64:
     let v_self: i64 = cv_node("TEnum")
@@ -125,6 +109,20 @@ unsafe fn cc_TEnum(v_name: i64, v_values: i64) -> i64:
     cv_field(v_self, "name", v_name)
     cv_field(v_self, "values", v_values)
     return v_self
+
+unsafe fn cc_TTaggedEnum(name: i64, values: i64, payloads: i64) -> i64:
+    let typ: i64 = cv_node("TTaggedEnum")
+    cv_field(typ, "name", name)
+    cv_field(typ, "values", values)
+    cv_field(typ, "payloads", payloads)
+    return typ
+
+unsafe fn cc_is_tagged_value(typ: i64) -> bool:
+    return cv_classes(typ, "TWrapper") or cv_classes(typ, "TTaggedEnum")
+
+unsafe fn cc_is_sum_ctor(expr: i64) -> bool:
+    let kind: i64 = cv_getkey(expr, "kindt")
+    return cv_name(kind, "wrapper_ctor") or cv_name(kind, "tagged_ctor")
 
 unsafe fn cc_int(v_signed: i64, v_bits: i64) -> i64:
     let v_k: i64 = 0
@@ -149,7 +147,7 @@ unsafe fn cc_type_size(v_t: i64) -> i64:
             cc_error(cv_add(cv_text("размер структуры ещё не вычислен: "), cc_display(v_t)), 0, 0)
             return 0
         return cv_getkey(v_t, "size")
-    if cv_classes(v_t, "TWrapper"):
+    if cc_is_tagged_value(v_t):
         return cv_getkey(v_t, "size")
     cc_error(cv_add(cv_text("невычислимый размер типа "), cc_display(v_t)), 0, 0)
     return 0
@@ -170,7 +168,7 @@ unsafe fn cc_type_align(v_t: i64) -> i64:
             cc_error(cv_add(cv_text("невозможно вычислить выравнивание незавершённой структуры "), cc_display(v_t)), 0, 0)
             return 0
         return cv_getkey(v_t, "align")
-    if cv_classes(v_t, "TWrapper"):
+    if cc_is_tagged_value(v_t):
         return cv_getkey(v_t, "align")
     cc_error(cv_add(cv_text("unknown align "), cc_display(v_t)), 0, 0)
     return 0
@@ -196,8 +194,34 @@ unsafe fn cc_is_bool(v_t: i64) -> i64:
 unsafe fn cc_is_array(v_t: i64) -> i64:
     return cv_bool(cv_classes(v_t, "TArray"))
 
+unsafe fn cc_is_mut_slice(v_t: i64) -> bool:
+    return cv_classes(v_t, "TSlice") and cv_truth(cv_getkey(v_t, "mutable"))
+
 unsafe fn cc_is_struct(v_t: i64) -> i64:
     return cv_bool(cv_classes(v_t, "TStruct"))
+
+const CC_CMP_STRING: i64 = 1
+const CC_CMP_ENUM: i64 = 2
+const CC_CMP_INT: i64 = 3
+const CC_CMP_FLOAT: i64 = 4
+const CC_CMP_PTR: i64 = 5
+
+unsafe fn cc_comparison_kind(v_l: i64, v_r: i64, v_equality: bool) -> i64:
+    if v_equality and cv_classes(v_l, "TString") and cv_classes(v_r, "TString"):
+        return CC_CMP_STRING
+    # Enums share the TInt storage class but require the same enum type.
+    if cv_classes(v_l, "TEnum") or cv_classes(v_r, "TEnum"):
+        if v_equality and cv_equal(v_l, v_r): return CC_CMP_ENUM
+        return 0
+    if cv_classes(v_l, "TInt") and cv_classes(v_r, "TInt"): return CC_CMP_INT
+    if cv_classes(v_l, "TFloat") and cv_classes(v_r, "TFloat"): return CC_CMP_FLOAT
+    if cv_classes(v_l, "TPtr") and cv_classes(v_r, "TPtr") and cv_equal(v_l, v_r): return CC_CMP_PTR
+    return 0
+
+unsafe fn cc_satisfies_eq(v_type: i64) -> bool:
+    let v_kind: i64 = cc_comparison_kind(v_type, v_type, true)
+    # Float and raw-address comparisons remain available without an Eq bound.
+    return v_kind == CC_CMP_STRING or v_kind == CC_CMP_ENUM or v_kind == CC_CMP_INT
 
 unsafe fn cc_type_depth(v_t: i64) -> i64:
     let v_depth: i64 = 0
@@ -217,7 +241,7 @@ unsafe fn cc_type_depth(v_t: i64) -> i64:
             cv_push(collect_1, cc_type_depth(part_5))
         return cv_add(cv_add(v_depth, 11), cv_maximum(collect_1, 3))
     let choice_6: i64 = 0
-    if cv_classes(v_t, "TStruct"):
+    if cv_classes(v_t, "TStruct") or cv_classes(v_t, "TWrapper"):
         choice_6 = cv_getkey(v_t, "type_depth")
     else:
         choice_6 = 11
@@ -249,7 +273,7 @@ unsafe fn cc_type_variables(v_t: i64) -> i64:
         return cv_union(collect_6)
     return cv_vector(CV_SET)
 
-unsafe fn cc_contains_wrapper_type(v_t: i64) -> i64:
+unsafe fn cc_contains_tagged_type(v_t: i64) -> i64:
     let v_pending: i64 = 0
     let v_seen: i64 = 0
     let v_item: i64 = 0
@@ -260,7 +284,7 @@ unsafe fn cc_contains_wrapper_type(v_t: i64) -> i64:
     v_seen = cv_vector(CV_SET)
     while cv_truth(v_pending):
         v_item = cv_pop(v_pending)
-        if cv_classes(v_item, "TWrapper"):
+        if cc_is_tagged_value(v_item):
             return CV_TRUE
         v_ident = cv_i(v_item)
         if (cv_contains(v_seen, v_ident)):

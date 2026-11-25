@@ -109,6 +109,11 @@ el navegador básicos no necesitan CUDA.
 
 [Referencia en ruso](docs/language.md) · [Hoja de ruta](ROADMAP.md) · [Licencia MIT](LICENSE)
 
+Extensiones del núcleo: [módulos y `pub`](docs/modules.md), [propiedad y `drop`](docs/owned-buffer.md),
+[vistas léxicas](docs/slice-borrows.md), [`TextView`](docs/text-view.md),
+[`Option`/`Result` compuestos](docs/option-result-payloads.md), [enum con datos](docs/enum-payloads.md)
+y [`T: Eq`](docs/language.md#ограничение-t-eq).
+
 ## Especificación del lenguaje VOLT 0.3.0
 
 Esta sección describe el lenguaje implementado por el compilador de referencia
@@ -184,8 +189,9 @@ print(count, ratio, byte, LIMIT)
 | `fnptr<(A, B) -> R>` | 8 | Dirección de función tipada para callbacks de C |
 | `[N]T` | `N × sizeof(T)` | Arreglo de tamaño fijo |
 | `[]T` | 16 | Vista de solo lectura: puntero y número de elementos |
+| `[]mut T` | 16 | Vista mutable con acceso léxico exclusivo |
 | `struct` | Depende de los campos | Agregado con nombre y alineación natural |
-| `enum` | 8 | Discriminante nominal `i64`, sin datos asociados |
+| `enum` | 8 sin datos | Discriminante nominal `i64` y datos opcionales de la variante |
 | `Option<T>`, `Result<T,E>` | Depende del contenido | Valores etiquetados integrados, almacenados directamente |
 
 `int`, `uint` y `float` son alias de `i64`, `u64` y `f64`. Un `let` local
@@ -195,7 +201,7 @@ cero. `const` es inmutable y puede declararse a nivel local o de módulo. Su
 expresión escalar se evalúa al compilar: admite literales de tipos permitidos,
 operaciones aritméticas, conversiones, variantes de enum, `sizeof`, `alignof`
 y constantes previas, no llamadas a funciones ordinarias.
-Los tipos de `const` pueden ser enteros, flotantes, `bool`, `char` o enum,
+Los tipos de `const` pueden ser enteros, flotantes, `bool`, `char` o enum sin datos,
 no cadenas, punteros ni agregados.
 
 `as` convierte explícitamente. Las reglas numéricas también se aplican al
@@ -294,19 +300,20 @@ operaciones inseguras y solo se llama desde un contexto `unsafe`.
   se pasan a funciones VOLT por puntero implícito y se copian a almacenamiento
   local. El puntero oculto de resultado `sret` usa el primer registro entero.
   El resultado se conserva durante `defer`. No se pueden pasar o devolver
-  arreglos por valor ni devolver vistas.
+  arreglos por valor. Una vista de solo lectura puede devolverse con `-> []T from input`.
 - **Genéricos:** una función como `fn identity<T>(value: T) -> T:` se
   especializa al compilar para cada combinación de tipos inferida. Los
   argumentos permiten deducir tipos de estructuras anidadas y de punteros.
   Dos deducciones contradictorias para el mismo tipo son un error. Las
-  funciones externas y las de ensamblador no pueden ser genéricas.
+  funciones externas y las de ensamblador no pueden ser genéricas. `T: Eq`
+  se comprueba en el sitio de la llamada.
 - **FFI de C:** `unsafe extern fn` declara un símbolo externo de firma fija.
   `link "-lc"` solicita una biblioteca ELF compartida. Se admiten tipos
-  escalares y punteros compatibles. Un `enum` de VOLT usa `i64`, no la
+  escalares y punteros compatibles. Un `enum` de VOLT sin datos usa `i64`, no la
   representación de un `enum` de C. Los agregados se pasan por dirección, en
-  memoria del llamador. No se admiten por valor arreglos, estructuras, vistas
-  ni valores etiquetados en firmas externas, y tampoco llamadas variádicas
-  ni la exportación automática de funciones VOLT a C.
+  memoria del llamador, salvo `extern struct` de hasta 16 bytes con campos escalares
+  y alineación natural, que se puede pasar por valor a un `extern fn` directo.
+  No se admiten llamadas variádicas ni exportación automática a C.
 - **Callbacks:** `fnptr<(A, B) -> R>` o `fnptr<(A, B)>` (sin resultado) describe
   una firma escalar de C. `callback(named_function)` permite pasar una función
   nombrada a C desde `unsafe`. Se comprueba la firma; los argumentos que no
@@ -378,31 +385,30 @@ Un `enum` guarda un discriminante `i64`. Si no se da un valor inicial, empieza
 en cero; cada valor implícito es el anterior más uno. Un valor explícito como
 `Green = 4` modifica la secuencia. Se escribe `Name.Variant`; solo se comparan
 valores del mismo enum con `==`/`!=` y se pueden convertir explícitamente a
-`i64`. Las variantes no contienen datos, y un enum usado en `match` debe tener
-discriminantes únicos.
+`i64` si no contienen datos. Una variante como `Number(i64)` almacena un único
+escalar y se construye con `Token.Number(42)`. Los discriminantes son únicos.
 
 `match` es una sentencia. Evalúa el valor una vez y requiere al menos una rama.
-Los patrones admitidos son `_`, `Enum.Variant`, `None`, `Some(name)`,
+Los patrones incluyen `_`, `Enum.Variant`, `Enum.Variant(name)`, `None`, `Some(name)`,
 `Ok(name)` y `Err(name)`. El conjunto de patrones debe ser exhaustivo y no
 solaparse; `_` cubre los restantes y se escribe al final. No hay guardas ni
 desestructuración. Los nombres vinculados son copias inmutables válidas solo
-dentro de la rama. Para `Option` o `Result`, se usa un valor local o parámetro,
-no un constructor temporal.
+dentro de la rama. Para `Option` o `Result`, se usa un valor local, un parámetro
+o el resultado de una función, no un constructor directo.
 
 `Option<T>` contiene `None` o `Some(T)` y `Result<T,E>` contiene `Ok(T)` o
 `Err(E)`. Si el constructor no determina todos los tipos, especifica una
 anotación o usa un contexto que los determine. `let r: Result<i64, i32> =
-Err(22 as i32)` contiene exactamente un `i32`. Los valores internos permitidos
-son enteros, flotantes, `bool`, `char`, enum, cadenas y punteros sin estos tipos
-etiquetados anidados. No se admiten arreglos, estructuras ni vistas como
-contenido. Se pueden usar como locales, parámetros y resultados de funciones
+Err(22 as i32)` contiene exactamente un `i32`. También se admiten estructuras
+copiables, enum con datos y `Option`/`Result` anidados, pero no vistas, arreglos
+por valor ni propietarios no copiables. Se pueden usar como locales, parámetros y resultados de funciones
 VOLT, pero no como variables globales, constantes, campos, elementos de arreglo
 ni variables inicializadas automáticamente a cero. La reasignación local o
 de un parámetro exige el mismo tipo, evalúa el lado derecho una vez y copia
 la etiqueta y los datos activos, poniendo a cero los bytes no utilizados.
 
 `?` extrae el valor de éxito. Con `None` o `Err` retorna de la función VOLT
-que lo contiene y ejecuta sus `defer`. Para `Option` el retorno debe ser
+que lo contiene y ejecuta sus `defer` y `drop`. Para `Option` el retorno debe ser
 exactamente el mismo `Option<T>`; para `Result` el tipo de error debe coincidir
 pero el tipo de éxito puede cambiar. `?` puede usarse en expresiones anidadas
 y no está disponible en código `extern` ni `native`.
@@ -438,18 +444,12 @@ Es una convención interna de VOLT, no un ABI de C.
   determina el tipo. Se
   pueden copiar arreglos del mismo tipo; para pasarlos a una función, usa una
   vista o un puntero. Los arreglos locales viven en la pila.
-- **Vistas:** `data[start..end]` toma prestado `[start, end)` de un arreglo
-  local. Los límites son enteros con signo y se comprueba
-  `0 <= start <= end <= len(data)`. Una vista vacía es válida. `[]T` tiene
-  puntero y longitud en elementos, sin capacidad, y se alinea a 8 bytes. Se
-  permiten varias vistas de solo lectura, incluso superpuestas, y la lectura
-  del arreglo. No se puede escribir a través de la vista ni directamente en el
-  arreglo prestado hasta que termine el bloque, incluidas sus acciones `defer`.
-  No se admite copiar una vista con `let` ni reasignarla, crear vistas mutables
-  o a partir de otra vista, convertir arreglos de forma implícita, devolver
-  vistas, guardarlas en agregados o globales ni pasarlas por el ABI de C. No hay análisis del último
-  uso ni comprobación de la vida útil de punteros sin procesar. Obtener una
-  dirección de la vista requiere `unsafe`.
+- **Vistas:** `data[start..end]` crea una vista `[]T` de solo lectura;
+  `mut data[start..end]` crea una vista exclusiva `[]mut T` de un arreglo local.
+  Durante un préstamo mutable no se permite acceder directamente al arreglo.
+  El préstamo dura hasta el final del bloque, incluido `defer`. Se puede
+  devolver una vista de solo lectura derivada del parámetro indicado por `from`.
+  Las vistas no se guardan en agregados ni se pasan por el ABI de C.
 - **Punteros:** `&place` obtiene una dirección. Desreferenciar, indexar,
   acceder a campos a través del puntero, hacer aritmética o convertir punteros
   requiere `unsafe`. `p + i`, `i + p` y `p - i` avanzan en unidades de
@@ -461,7 +461,8 @@ Es una convención interna de VOLT, no un ABI de C.
   el NUL. Los literales no pueden contenerlo. La concatenación y repetición
   usan una arena compartida de 1 MiB por proceso; agotarla produce `panic`.
   Ese límite no se aplica a todos los búferes. Una cadena para C requiere una
-  conversión explícita dentro de `unsafe`.
+  conversión explícita dentro de `unsafe`. [`TextView`](docs/text-view.md)
+  guarda la longitud y ofrece acceso O(1) y subrangos sin copia.
 - **Búferes:** `ByteBuffer` contiene bytes, incluido NUL, con longitud y
   capacidad; `Buffer<T>` almacena elementos tipados. Parte de almacenamiento
   inicializado a cero, mantén un propietario y libera explícitamente con
@@ -476,6 +477,8 @@ Es una convención interna de VOLT, no un ABI de C.
   bloque. Mientras haya lectores, ninguna copia del descriptor puede editar
   ni liberar el búfer. El propietario se libera explícitamente; los elementos
   se copian de forma superficial.
+- **Propietario único:** [`OwnedBuffer`](docs/owned-buffer.md) se mueve con
+  `let`, al llamar o al retornar; los propietarios vivos se liberan después de `defer`.
 
 ```volt
 fn sum(values: []i64) -> i64:
@@ -494,8 +497,10 @@ print(sum(middle)) # 50
 `use NAME` o `use A, B` busca `NAME.volt` junto al archivo que importa y luego
 en `vstd/`, `browser/modules/`, `gpu/modules/` y `tools/modules/`, en ese orden,
 bajo la raíz de instalación del compilador. Cada módulo se carga una vez; las dependencias se
-inicializan primero y los ciclos son errores. Las declaraciones comparten
-un espacio de nombres, sin alias ni modificadores de visibilidad. `io` y
+inicializan primero y los ciclos son errores. Sin `module NAME` se mantienen
+las importaciones planas. Un archivo con `module NAME` exporta con `pub` y
+se accede con nombres como `fs.open`, también tras `use NAME as ALIAS`.
+Los constructores y campos de las estructuras públicas siguen siendo privados. `io` y
 `str` se importan automáticamente. Un módulo admite `const`, `let` global
 con inicializador constante y llamadas de inicialización de nivel superior.
 
@@ -539,12 +544,12 @@ ejecuta scripts.
 
 Solo se admite Linux x86-64 con el subconjunto de ABI descrito. Comprobar
 índices y aritmética no hace seguros los punteros sin procesar ni el FFI.
-`unsafe` asigna responsabilidades al llamador: no es una zona aislada. No hay
-un analizador general de préstamos, destrucción automática ni recolector de
-basura. No están implementados los enum definidos por el usuario con datos,
+`unsafe` asigna responsabilidades al llamador: no es una zona aislada. La
+comprobación de préstamos de vistas es léxica y la destrucción automática se
+limita a `OwnedBuffer`; `Buffer<T>` aún se libera manualmente. No se implementan
 traits, genéricos con parámetros constantes, clausuras, tuplas, macros,
-`async`/`await` en VOLT ni bloques arbitrarios de ensamblador en línea. Las
-promesas de JavaScript y CUDA son integraciones aparte, no sintaxis de VOLT.
+`async`/`await`, bloques arbitrarios de ensamblador en línea ni un recolector de
+basura. Las promesas de JavaScript y CUDA son integraciones aparte, no sintaxis de VOLT.
 
 Las [pruebas de salida](tests/run.py), [regresiones](tests/regressions.py) y
 [comprobaciones de autocompilación](bootstrap/README.md) ejercitan el contrato.

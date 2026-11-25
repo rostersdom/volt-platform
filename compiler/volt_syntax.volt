@@ -395,50 +395,77 @@ unsafe fn ccp_line_end(v_self: i64) -> i64:
     return 0
 
 unsafe fn ccp_parse_program(v_self: i64) -> i64:
-    let v_prog: i64 = 0
-    let v_line_no: i64 = 0
-    let v_t: i64 = 0
-    v_prog = cc_Program(cv_getkey(v_self, "file"))
-    while (not (cv_equal(cv_subscript(ccp_peek(v_self), cv_text("k")), cv_text("eof")))):
+    let file: i64 = cv_getkey(v_self, "file")
+    let v_prog: i64 = cc_Program(file)
+    ccp_skip_nl(v_self)
+    if ccp_at_id(v_self, "module") and cv_name(cv_getkey(ccp_peek_next(v_self), "k"), "id"):
+        ccp_next(v_self)
+        cv_field(v_prog, "module", cv_getkey(ccp_next(v_self), "t"))
+        ccp_line_end(v_self)
+    while true:
         ccp_skip_nl(v_self)
-        if (cv_equal(cv_subscript(ccp_peek(v_self), cv_text("k")), cv_text("eof"))):
-            break
-        v_line_no = cv_subscript(ccp_peek(v_self), cv_text("line"))
-        if cv_truth(ccp_at(v_self, cv_text("use"))):
+        if cv_name(cv_getkey(ccp_peek(v_self), "k"), "eof"): break
+        let public: bool = ccp_at_id(v_self, "pub") and cv_name(cv_getkey(ccp_peek_next(v_self), "k"), "kw")
+        let line: i64 = cv_getkey(ccp_peek(v_self), "line")
+        let indent: i64 = cv_getkey(ccp_peek(v_self), "ind")
+        if public:
+            if cv_getkey(v_prog, "module") == 0: cc_error(cv_text("pub требует заголовок module"), file, line)
             ccp_next(v_self)
-            while cv_truth(CV_TRUE):
-                v_t = ccp_expect(v_self, cv_text("id"), 0)
-                cv_push(cv_getkey(v_prog, "uses"), cv_subscript(v_t, cv_text("t")))
-                if cv_truth(ccp_atp(v_self, cv_text(","))):
+        if cv_truth(ccp_at(v_self, cv_text("use"))):
+            if public: cc_error(cv_text("pub use не поддерживается"), file, line)
+            ccp_next(v_self)
+            while true:
+                let item: i64 = cv_getkey(ccp_expect(v_self, cv_text("id"), 0), "t")
+                let uses: i64 = cv_getkey(v_prog, "uses")
+                if cv_truth(ccp_at(v_self, cv_text("as"))):
                     ccp_next(v_self)
-                    continue
-                break
+                    let aliases: i64 = cv_getkey(v_prog, "use_aliases")
+                    if aliases == 0:
+                        aliases = cv_dict()
+                        cv_field(v_prog, "use_aliases", aliases)
+                    cv_set(aliases, cv_length(uses), cv_getkey(ccp_expect(v_self, cv_text("id"), 0), "t"))
+                cv_push(uses, item)
+                if not cv_truth(ccp_atp(v_self, cv_text(","))): break
+                ccp_next(v_self)
+            ccp_line_end(v_self)
+        elif cv_truth(ccp_at(v_self, cv_text("link"))):
+            if public: cc_error(cv_text("pub link не поддерживается"), file, line)
+            ccp_next(v_self)
+            let t: i64 = ccp_expect(v_self, cv_text("str"), 0)
+            cv_push(cv_getkey(v_prog, "uses"), cv_cat(cv_text("__link__:"), cv_getkey(t, "t")))
             ccp_line_end(v_self)
         else:
-            if cv_truth(ccp_at(v_self, cv_text("link"))):
-                ccp_next(v_self)
-                v_t = ccp_expect(v_self, cv_text("str"), 0)
-                cv_push(cv_getkey(v_prog, "uses"), cv_add(cv_text("__link__:"), cv_subscript(v_t, cv_text("t"))))
-                ccp_line_end(v_self)
+            let next: i64 = cv_getkey(ccp_peek_next(v_self), "t")
+            let c_layout: bool = cv_truth(ccp_at(v_self, cv_text("extern"))) and cv_name(next, "struct")
+            let def: i64 = 0
+            if c_layout or cv_truth(ccp_at(v_self, cv_text("struct"))):
+                if c_layout: ccp_next(v_self)
+                def = ccp_parse_struct(v_self)
+                if c_layout: cv_field(def, "c_layout", CV_TRUE)
+                cv_push(cv_getkey(v_prog, "structs"), def)
+            elif cv_truth(ccp_at(v_self, cv_text("enum"))):
+                def = ccp_parse_enum(v_self, indent)
+                cv_push(cv_getkey(v_prog, "enums"), def)
+            elif cv_truth(ccp_at(v_self, cv_text("fn"))) or cv_truth(ccp_at(v_self, cv_text("extern"))) or cv_truth(ccp_at(v_self, cv_text("native"))) or (cv_truth(ccp_at(v_self, cv_text("unsafe"))) and (cv_name(next, "fn") or cv_name(next, "extern") or cv_name(next, "native"))):
+                def = ccp_parse_fn(v_self, indent)
+                cv_push(cv_getkey(v_prog, "fns"), def)
             else:
-                if cv_truth(ccp_at(v_self, cv_text("struct"))):
-                    cv_push(cv_getkey(v_prog, "structs"), ccp_parse_struct(v_self))
-                else:
-                    if cv_truth(ccp_at(v_self, cv_text("enum"))):
-                        cv_push(cv_getkey(v_prog, "enums"), ccp_parse_enum(v_self))
-                    else:
-                        let logic_3: bool = cv_truth(ccp_at(v_self, cv_text("fn"))) or cv_truth(ccp_at(v_self, cv_text("extern"))) or cv_truth(ccp_at(v_self, cv_text("native")))
-                        if not logic_3:
-                            let logic_2: bool = cv_truth(ccp_at(v_self, cv_text("unsafe"))) and (cv_less(cv_add(cv_getkey(v_self, "i"), 11), cv_length(cv_getkey(v_self, "toks")))) and (cv_equal(cv_subscript(cv_subscript(cv_getkey(v_self, "toks"), cv_add(cv_getkey(v_self, "i"), 11)), cv_text("k")), cv_text("kw")))
-                            if logic_2:
-                                let subject_1: i64 = cv_subscript(cv_subscript(cv_getkey(v_self, "toks"), cv_add(cv_getkey(v_self, "i"), 11)), cv_text("t"))
-                                logic_2 = ((cv_equal(subject_1, cv_text("fn")) or cv_equal(subject_1, cv_text("extern")) or cv_equal(subject_1, cv_text("native"))))
-                            logic_3 = (logic_2)
-                        if (logic_3):
-                            cv_push(cv_getkey(v_prog, "fns"), ccp_parse_fn(v_self))
-                        else:
-                            cv_push(cv_getkey(v_prog, "main"), ccp_parse_stmt(v_self))
+                if public and not cv_truth(ccp_at(v_self, cv_text("const"))):
+                    cc_error(cv_text("pub допустим для fn, struct, enum и const"), file, line)
+                def = ccp_parse_stmt(v_self)
+                cv_push(cv_getkey(v_prog, "main"), def)
+            if public: cv_field(def, "pub", CV_TRUE)
     return v_prog
+
+unsafe fn ccp_peek_next(parser: i64) -> i64:
+    let index: i64 = cv_index(cv_getkey(parser, "i")) + 1
+    let tokens: i64 = cv_getkey(parser, "toks")
+    if index < cv_len(tokens): return cv_at(tokens, index)
+    return 0
+
+unsafe fn ccp_at_id(parser: i64, name: string) -> bool:
+    let tok: i64 = ccp_peek(parser)
+    return cv_name(cv_getkey(tok, "k"), "id") and cv_name(cv_getkey(tok, "t"), name)
 
 unsafe fn ccp_parse_struct(v_self: i64) -> i64:
     let v_kw: i64 = 0
@@ -452,7 +479,7 @@ unsafe fn ccp_parse_struct(v_self: i64) -> i64:
     let v_ftype: i64 = 0
     v_kw = ccp_next(v_self)
     v_name = cv_subscript(ccp_expect(v_self, cv_text("id"), 0), cv_text("t"))
-    v_type_params = ccp_parse_type_params(v_self)
+    v_type_params = ccp_parse_type_params(v_self, 0)
     ccp_expect(v_self, cv_text("punct"), cv_text(":"))
     ccp_line_end(v_self)
     v_pe = ccp_peek(v_self)
@@ -484,7 +511,7 @@ unsafe fn ccp_parse_struct(v_self: i64) -> i64:
         return 0
     return cc_StructDef(cv_getkey(v_self, "file"), v_name, v_fields, cv_subscript(v_kw, cv_text("line")), v_type_params)
 
-unsafe fn ccp_parse_type_params(v_self: i64) -> i64:
+unsafe fn ccp_parse_type_params(v_self: i64, v_eq_params: i64) -> i64:
     let v_params: i64 = 0
     let v_param: i64 = 0
     let items_1: i64 = cv_vector(CV_LIST)
@@ -493,21 +520,33 @@ unsafe fn ccp_parse_type_params(v_self: i64) -> i64:
         ccp_next(v_self)
         while cv_truth(CV_TRUE):
             v_param = ccp_expect(v_self, cv_text("id"), 0)
-            if (cv_contains(v_params, cv_subscript(v_param, cv_text("t")))):
+            let v_name: i64 = cv_getkey(v_param, "t")
+            if cv_contains(v_params, v_name):
                 let pieces_2: i64 = cv_list()
                 cv_push(pieces_2, cv_text("параметр типа "))
-                cv_push(pieces_2, cv_format(cv_subscript(v_param, cv_text("t")), ""))
+                cv_push(pieces_2, cv_format(v_name, ""))
                 cv_push(pieces_2, cv_text(" указан дважды"))
                 cc_error(cv_join(cv_text(""), pieces_2), cv_getkey(v_self, "file"), cv_subscript(v_param, cv_text("line")))
                 return 0
-            cv_push(v_params, cv_subscript(v_param, cv_text("t")))
+            cv_push(v_params, v_name)
+            if cv_truth(ccp_atp(v_self, cv_text(":"))):
+                let v_colon: i64 = ccp_next(v_self)
+                if v_eq_params == 0:
+                    cc_error(cv_text("ограничения параметров типа разрешены только у функций"), cv_getkey(v_self, "file"), cv_getkey(v_colon, "line"))
+                    return 0
+                let v_bound: i64 = ccp_expect(v_self, cv_text("id"), 0)
+                let v_bound_name: i64 = cv_getkey(v_bound, "t")
+                if not cv_name(v_bound_name, "Eq"):
+                    cc_error(cv_cat(cv_text("неизвестное ограничение параметра типа: "), v_bound_name), cv_getkey(v_self, "file"), cv_getkey(v_bound, "line"))
+                    return 0
+                cv_push(v_eq_params, v_name)
             if not (cv_truth(ccp_atp(v_self, cv_text(",")))):
                 break
             ccp_next(v_self)
         ccp_expect_gt(v_self)
     return v_params
 
-unsafe fn ccp_parse_enum(v_self: i64) -> i64:
+unsafe fn ccp_parse_enum(v_self: i64, v_header: i64) -> i64:
     let v_kw: i64 = 0
     let v_name: i64 = 0
     let v_pe: i64 = 0
@@ -527,7 +566,7 @@ unsafe fn ccp_parse_enum(v_self: i64) -> i64:
     ccp_expect(v_self, cv_text("punct"), cv_text(":"))
     ccp_line_end(v_self)
     v_pe = ccp_peek(v_self)
-    if ((cv_equal(cv_subscript(v_pe, cv_text("k")), cv_text("eof"))) or (cv_le(cv_subscript(v_pe, cv_text("ind")), cv_subscript(v_kw, cv_text("ind"))))):
+    if ((cv_equal(cv_subscript(v_pe, cv_text("k")), cv_text("eof"))) or (cv_le(cv_subscript(v_pe, cv_text("ind")), v_header))):
         let pieces_1: i64 = cv_list()
         cv_push(pieces_1, cv_text("enum "))
         cv_push(pieces_1, cv_format(v_name, ""))
@@ -562,6 +601,11 @@ unsafe fn ccp_parse_enum(v_self: i64) -> i64:
             cc_error(cv_join(cv_text(""), pieces_4), cv_getkey(v_self, "file"), cv_subscript(v_variant, cv_text("line")))
             return 0
         cv_add_set(v_names, v_variant_name)
+        let payload: i64 = 0
+        if cv_truth(ccp_atp(v_self, cv_text("("))):
+            ccp_next(v_self)
+            payload = ccp_parse_type(v_self, CV_FALSE, cv_i(0))
+            ccp_expect(v_self, cv_text("punct"), cv_text(")"))
         v_value = v_next_value
         if cv_truth(ccp_atp(v_self, cv_text("="))):
             ccp_next(v_self)
@@ -595,7 +639,9 @@ unsafe fn ccp_parse_enum(v_self: i64) -> i64:
             cc_error(cv_join(cv_text(""), pieces_6), cv_getkey(v_self, "file"), cv_subscript(v_variant, cv_text("line")))
             return 0
         ccp_line_end(v_self)
-        cv_push(v_variants, cv_pair(v_variant_name, v_value))
+        let variant: i64 = cv_pair(v_variant_name, v_value)
+        cv_push(variant, payload)
+        cv_push(v_variants, variant)
         v_next_value = cv_add(v_value, 11)
     if not (cv_truth(v_variants)):
         let pieces_7: i64 = cv_list()
@@ -606,10 +652,8 @@ unsafe fn ccp_parse_enum(v_self: i64) -> i64:
         return 0
     return cc_EnumDef(cv_getkey(v_self, "file"), v_name, v_variants, cv_subscript(v_kw, cv_text("line")))
 
-unsafe fn ccp_parse_fn(v_self: i64) -> i64:
+unsafe fn ccp_parse_fn(v_self: i64, v_head_ind: i64) -> i64:
     let v_is_unsafe: i64 = 0
-    let v_head_ind: i64 = 0
-    let v_prefix: i64 = 0
     let v_native: i64 = 0
     let v_kw: i64 = 0
     let v_is_extern: i64 = 0
@@ -623,11 +667,9 @@ unsafe fn ccp_parse_fn(v_self: i64) -> i64:
     let v_raw: i64 = 0
     let v_parts: i64 = 0
     v_is_unsafe = CV_FALSE
-    v_head_ind = 0
     if cv_truth(ccp_at(v_self, cv_text("unsafe"))):
-        v_prefix = ccp_next(v_self)
+        ccp_next(v_self)
         v_is_unsafe = CV_TRUE
-        v_head_ind = cv_subscript(v_prefix, cv_text("ind"))
     v_native = CV_FALSE
     v_kw = ccp_next(v_self)
     v_is_extern = cv_bool((cv_equal(cv_subscript(v_kw, cv_text("t")), cv_text("extern"))))
@@ -644,7 +686,8 @@ unsafe fn ccp_parse_fn(v_self: i64) -> i64:
                     ccp_next(v_self)
                     v_native = CV_TRUE
     v_name = cv_subscript(ccp_expect(v_self, cv_text("id"), 0), cv_text("t"))
-    v_type_params = ccp_parse_type_params(v_self)
+    let v_eq_params: i64 = cv_list()
+    v_type_params = ccp_parse_type_params(v_self, v_eq_params)
     ccp_expect(v_self, cv_text("punct"), cv_text("("))
     let items_1: i64 = cv_vector(CV_LIST)
     v_params = items_1
@@ -663,6 +706,11 @@ unsafe fn ccp_parse_fn(v_self: i64) -> i64:
     if cv_truth(ccp_atp(v_self, cv_text("->"))):
         ccp_next(v_self)
         v_ret = ccp_parse_type(v_self, CV_FALSE, 3)
+    let v_source: i64 = 0
+    let v_next: i64 = ccp_peek(v_self)
+    if cv_name(cv_getkey(v_next, "k"), "id") and cv_name(cv_getkey(v_next, "t"), "from"):
+        ccp_next(v_self)
+        v_source = cv_getkey(ccp_expect(v_self, cv_text("id"), 0), "t")
     if cv_truth(v_native):
         v_body = ccp_parse_native_body(v_self)
         let seq_3: i64 = v_body
@@ -684,7 +732,9 @@ unsafe fn ccp_parse_fn(v_self: i64) -> i64:
         cv_push(extra_6, cv_subscript(v_kw, cv_text("line")))
         cv_push(extra_6, CV_TRUE)
         cv_push(extra_6, 0)
-        return cc_FnDef(cv_getkey(v_self, "file"), v_name, v_params, v_ret, v_body, extra_6)
+        let v_fn: i64 = cc_FnDef(cv_getkey(v_self, "file"), v_name, v_params, v_ret, v_body, extra_6)
+        if v_source != 0: cv_field(v_fn, "ret_source", v_source)
+        return v_fn
     if cv_truth(v_is_extern):
         if cv_truth(v_type_params):
             cc_error(cv_text("generic-функции пока не поддерживают native/extern ABI"), cv_getkey(v_self, "file"), cv_subscript(v_kw, cv_text("line")))
@@ -695,21 +745,21 @@ unsafe fn ccp_parse_fn(v_self: i64) -> i64:
         cv_push(extra_7, cv_subscript(v_kw, cv_text("line")))
         cv_push(extra_7, v_is_unsafe)
         cv_push(extra_7, 0)
-        return cc_FnDef(cv_getkey(v_self, "file"), v_name, v_params, v_ret, 0, extra_7)
+        let v_fn: i64 = cc_FnDef(cv_getkey(v_self, "file"), v_name, v_params, v_ret, 0, extra_7)
+        if v_source != 0: cv_field(v_fn, "ret_source", v_source)
+        return v_fn
     ccp_expect(v_self, cv_text("punct"), cv_text(":"))
     ccp_line_end(v_self)
-    let choice_8: i64 = 0
-    if (v_head_ind == 0):
-        choice_8 = cv_subscript(v_kw, cv_text("ind"))
-    else:
-        choice_8 = v_head_ind
-    v_body = ccp_parse_block(v_self, choice_8)
+    v_body = ccp_parse_block(v_self, v_head_ind)
     let extra_9: i64 = cv_tuple()
     cv_push(extra_9, 0)
     cv_push(extra_9, cv_subscript(v_kw, cv_text("line")))
     cv_push(extra_9, v_is_unsafe)
     cv_push(extra_9, v_type_params)
-    return cc_FnDef(cv_getkey(v_self, "file"), v_name, v_params, v_ret, v_body, extra_9)
+    let v_fn: i64 = cc_FnDef(cv_getkey(v_self, "file"), v_name, v_params, v_ret, v_body, extra_9)
+    if v_source != 0: cv_field(v_fn, "ret_source", v_source)
+    if cv_truth(v_eq_params): cv_field(v_fn, "eq_params", v_eq_params)
+    return v_fn
 
 unsafe fn ccp_parse_native_body(v_self: i64) -> i64:
     let v_lines: i64 = 0
@@ -936,14 +986,15 @@ unsafe fn ccp_parse_match(v_self: i64) -> i64:
             return 0
         v_pattern = cv_subscript(v_p, cv_text("t"))
         v_binding = 0
-        if ((cv_equal(v_pattern, cv_text("Some")) or cv_equal(v_pattern, cv_text("Ok")) or cv_equal(v_pattern, cv_text("Err")))):
+        let binding_required: bool = cv_name(v_pattern, "Some") or cv_name(v_pattern, "Ok") or cv_name(v_pattern, "Err")
+        let qualified: bool = cv_truth(ccp_atp(v_self, cv_text(".")))
+        while cv_truth(ccp_atp(v_self, cv_text("."))):
+            ccp_next(v_self)
+            v_pattern = cc_qualified_variant(v_pattern, cv_subscript(ccp_expect(v_self, cv_text("id"), 0), cv_text("t")))
+        if (not qualified and binding_required) or (qualified and cv_truth(ccp_atp(v_self, cv_text("(")))):
             ccp_expect(v_self, cv_text("punct"), cv_text("("))
             v_binding = cv_subscript(ccp_expect(v_self, cv_text("id"), 0), cv_text("t"))
             ccp_expect(v_self, cv_text("punct"), cv_text(")"))
-        else:
-            if (cv_truth(v_pattern) and cv_truth(ccp_atp(v_self, cv_text(".")))):
-                ccp_next(v_self)
-                v_pattern = cv_add(v_pattern, cv_add(cv_text("."), cv_subscript(ccp_expect(v_self, cv_text("id"), 0), cv_text("t"))))
         ccp_expect(v_self, cv_text("punct"), cv_text(":"))
         v_body = ccp_block_or_inline(v_self, cv_subscript(v_p, cv_text("line")), cv_subscript(v_p, cv_text("ind")))
         cv_push(v_arms, cc_MatchArm(v_pattern, v_binding, v_body, cv_subscript(v_p, cv_text("line"))))
@@ -1066,6 +1117,9 @@ unsafe fn ccp_parse_type(v_self: i64, v_in_cast: i64, v_nesting: i64) -> i64:
         v_elem = ccp_parse_type(v_self, v_in_cast, cv_add(v_nesting, 11))
         return cc_TExpr(cv_text("array"), cv_pair(v_elem, v_size_n), cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file"))
     v_name = cv_subscript(ccp_expect(v_self, cv_text("id"), 0), cv_text("t"))
+    if cv_truth(ccp_atp(v_self, cv_text("."))) and (not cv_truth(v_in_cast) or not cv_contains(cc_k_scalar_type_names, v_name)):
+        ccp_next(v_self)
+        v_name = cc_qualified_variant(v_name, cv_getkey(ccp_expect(v_self, cv_text("id"), 0), "t"))
     if (cv_equal(v_name, cv_text("ptr"))):
         ccp_expect(v_self, cv_text("punct"), cv_text("<"))
         v_e = ccp_parse_type(v_self, CV_FALSE, cv_add(v_nesting, 11))
@@ -1270,6 +1324,28 @@ unsafe fn ccp_parse_unary(v_self: i64) -> i64:
         return cc_AddrOf(ccp_parse_unary(v_self), cv_subscript(v_t, cv_text("line")))
     return ccp_parse_postfix(v_self)
 
+unsafe fn cc_qualified_variant(name: i64, variant: i64) -> i64:
+    return cv_cat(cv_cat(name, cv_text(".")), variant)
+
+unsafe fn cc_member_path(expr: i64) -> i64:
+    if cv_classes(expr, "VarRef"): return cv_getkey(expr, "name")
+    if cv_classes(expr, "Member") and cv_classes(cv_getkey(expr, "base"), "VarRef"):
+        return cc_qualified_variant(cv_getkey(cv_getkey(expr, "base"), "name"), cv_getkey(expr, "field"))
+    return 0
+
+unsafe fn ccp_parse_call_args(v_self: i64) -> i64:
+    ccp_expect(v_self, cv_text("punct"), cv_text("("))
+    cv_field(v_self, "depth", cv_add(cv_getkey(v_self, "depth"), 11))
+    let args: i64 = cv_list()
+    if not cv_truth(ccp_atp(v_self, cv_text(")"))):
+        while true:
+            cv_push(args, ccp_parse_expr(v_self))
+            if not cv_truth(ccp_atp(v_self, cv_text(","))): break
+            ccp_next(v_self)
+    ccp_expect(v_self, cv_text("punct"), cv_text(")"))
+    cv_field(v_self, "depth", cv_sub(cv_getkey(v_self, "depth"), 11))
+    return args
+
 unsafe fn ccp_parse_postfix(v_self: i64) -> i64:
     let v_e: i64 = 0
     let v_t: i64 = 0
@@ -1277,6 +1353,10 @@ unsafe fn ccp_parse_postfix(v_self: i64) -> i64:
     let v_idx: i64 = 0
     let v_end: i64 = 0
     let v_ty: i64 = 0
+    let v_mutable: i64 = CV_FALSE
+    if cv_truth(ccp_at(v_self, cv_text("mut"))):
+        ccp_next(v_self)
+        v_mutable = CV_TRUE
     v_e = ccp_parse_primary(v_self)
     while cv_truth(CV_TRUE):
         if cv_truth(ccp_atp(v_self, cv_text("?"))):
@@ -1286,7 +1366,15 @@ unsafe fn ccp_parse_postfix(v_self: i64) -> i64:
         if cv_truth(ccp_atp(v_self, cv_text("."))):
             v_t = ccp_next(v_self)
             v_f = cv_subscript(ccp_expect(v_self, cv_text("id"), 0), cv_text("t"))
-            v_e = cc_Member(v_e, v_f, cv_subscript(v_t, cv_text("line")))
+            let name: i64 = 0
+            if cv_truth(ccp_atp(v_self, cv_text("("))): name = cc_member_path(v_e)
+            if name != 0:
+                v_e = cc_Call(cc_qualified_variant(name, v_f), ccp_parse_call_args(v_self), cv_getkey(v_t, "line"))
+                cv_field(v_e, "call_qualifier", name)
+                cv_field(v_e, "call_member", v_f)
+                cv_field(v_e, "file", cv_getkey(v_self, "file"))
+            else:
+                v_e = cc_Member(v_e, v_f, cv_subscript(v_t, cv_text("line")))
             continue
         if cv_truth(ccp_atp(v_self, cv_text("["))):
             cv_field(v_self, "depth", cv_add(cv_getkey(v_self, "depth"), 11))
@@ -1297,7 +1385,8 @@ unsafe fn ccp_parse_postfix(v_self: i64) -> i64:
                 v_end = ccp_parse_expr(v_self)
                 ccp_expect(v_self, cv_text("punct"), cv_text("]"))
                 cv_field(v_self, "depth", cv_sub(cv_getkey(v_self, "depth"), 11))
-                v_e = cc_SliceExpr(v_e, v_idx, v_end, CV_FALSE, cv_subscript(v_t, cv_text("line")))
+                v_e = cc_SliceExpr(v_e, v_idx, v_end, v_mutable, cv_subscript(v_t, cv_text("line")))
+                v_mutable = CV_FALSE
                 continue
             ccp_expect(v_self, cv_text("punct"), cv_text("]"))
             cv_field(v_self, "depth", cv_sub(cv_getkey(v_self, "depth"), 11))
@@ -1309,13 +1398,14 @@ unsafe fn ccp_parse_postfix(v_self: i64) -> i64:
             v_e = cc_Cast(v_e, v_ty, cv_subscript(v_t, cv_text("line")))
             continue
         break
+    if cv_truth(v_mutable):
+        cc_error(cv_text("mut требует диапазон slice"), cv_getkey(v_self, "file"), cv_getkey(v_e, "line"))
     return v_e
 
 unsafe fn ccp_parse_primary(v_self: i64) -> i64:
     let v_t: i64 = 0
     let v_base: i64 = 0
     let v_typ: i64 = 0
-    let v_args: i64 = 0
     let v_e: i64 = 0
     let v_items: i64 = 0
     v_t = ccp_next(v_self)
@@ -1352,20 +1442,9 @@ unsafe fn ccp_parse_primary(v_self: i64) -> i64:
             let items_2: i64 = cv_vector(CV_LIST)
             return cc_Call(cv_text("None"), items_2, cv_subscript(v_t, cv_text("line")))
         if cv_truth(ccp_atp(v_self, cv_text("("))):
-            cv_field(v_self, "depth", cv_add(cv_getkey(v_self, "depth"), 11))
-            ccp_next(v_self)
-            let items_3: i64 = cv_vector(CV_LIST)
-            v_args = items_3
-            if not (cv_truth(ccp_atp(v_self, cv_text(")")))):
-                while cv_truth(CV_TRUE):
-                    cv_push(v_args, ccp_parse_expr(v_self))
-                    if cv_truth(ccp_atp(v_self, cv_text(","))):
-                        ccp_next(v_self)
-                        continue
-                    break
-            ccp_expect(v_self, cv_text("punct"), cv_text(")"))
-            cv_field(v_self, "depth", cv_sub(cv_getkey(v_self, "depth"), 11))
-            return cc_Call(cv_subscript(v_t, cv_text("t")), v_args, cv_subscript(v_t, cv_text("line")))
+            let v_call: i64 = cc_Call(cv_getkey(v_t, "t"), ccp_parse_call_args(v_self), cv_getkey(v_t, "line"))
+            cv_field(v_call, "file", cv_getkey(v_self, "file"))
+            return v_call
         return cc_VarRef(cv_subscript(v_t, cv_text("t")), cv_subscript(v_t, cv_text("line")))
     if ((cv_equal(cv_subscript(v_t, cv_text("k")), cv_text("punct"))) and (cv_equal(cv_subscript(v_t, cv_text("t")), cv_text("(")))):
         cv_field(v_self, "depth", cv_add(cv_getkey(v_self, "depth"), 11))

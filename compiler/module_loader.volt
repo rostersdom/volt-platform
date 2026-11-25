@@ -24,13 +24,24 @@ unsafe fn cc_discover(path: i64, modules: i64, sources: i64, active: i64, depth:
     cv_push(sources, program)
     cv_add_set(active, path)
     let deps: i64 = cv_list()
+    let namespaces: i64 = cv_dict()
     let uses: i64 = cv_getkey(program, "uses")
     for i in 0..cv_len(uses):
         let item: i64 = cv_at(uses, i)
         if not cv_starts(item, cv_text("__link__:")):
-            cv_push(deps, cc_discover(cc_find_module(path, item), modules, sources, active, depth + 1))
+            let imported: i64 = cc_discover(cc_find_module(path, item), modules, sources, active, depth + 1)
+            cv_push(deps, imported)
+            let alias: i64 = cv_get(cv_getkey(program, "use_aliases"), cv_i(i), 0)
+            if cv_getkey(imported, "module") != 0:
+                if alias == 0: alias = item
+                if cv_has(namespaces, alias) and cv_get(namespaces, alias, 0) != imported:
+                    cc_error(cv_cat(cv_text("повторное имя пространства: "), alias), path, cv_i(1))
+                cv_set(namespaces, alias, imported)
+            elif alias != 0:
+                cc_error(cv_text("use ... as требует модуль с заголовком module"), path, cv_i(1))
     cv_remove(active, path)
     cv_field(program, "dependencies", deps)
+    if cv_len(namespaces) != 0: cv_field(program, "namespaces", namespaces)
     return program
 
 unsafe fn cc_order_module(program: i64, ordered: i64):

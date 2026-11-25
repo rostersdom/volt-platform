@@ -170,7 +170,7 @@ unsafe fn cce_load_from_slot(v_self: i64, v_off: i64, v_t: i64) -> i64:
         cv_push(pieces_13, cv_text("]"))
         cce_e(v_self, cv_join(cv_text(""), pieces_13))
         return 0
-    if cv_classes(v_t, "TWrapper"):
+    if cc_is_tagged_value(v_t):
         let pieces_14: i64 = cv_list()
         cv_push(pieces_14, cv_text("lea rax, [rbp"))
         cv_push(pieces_14, cv_format(v_off, "+d"))
@@ -336,6 +336,9 @@ unsafe fn cce_eaddr(v_self: i64, v_e: i64) -> i64:
     let v_elem: i64 = 0
     let v_sz: i64 = 0
     let v_t: i64 = 0
+    if cv_classes(v_e, "SliceExpr"):
+        cce_emit_slice(v_self, v_e)
+        return cv_getkey(v_e, "type")
     if cv_classes(v_e, "VarRef"):
         v_s = cv_get(v_e, cv_text("slot"), 0)
         if (not (v_s == 0)):
@@ -528,12 +531,25 @@ unsafe fn cce_eaddr(v_self: i64, v_e: i64) -> i64:
             cc_error(cv_text("* не указатель"), cv_getkey(cv_getkey(v_self, "cur"), "file"), cv_getkey(v_e, "line"))
             return 0
         return cv_getkey(v_t, "elem")
+    if cv_classes(v_e, "Cast") and cv_truth(cv_getkey(v_e, "array_len_address")):
+        let operand: i64 = cv_getkey(v_e, "x")
+        let typ: i64 = cv_getkey(v_e, "type")
+        if (cv_classes(typ, "TArray") or cv_classes(typ, "TStruct")) and cv_equal(typ, cv_getkey(operand, "type")):
+            return cce_eaddr(v_self, operand)
     if (cv_classes(v_e, "Call") and (cv_equal(cv_get(v_e, cv_text("kindt"), 0), cv_text("ctor")))):
+        if cv_truth(cv_getkey(v_e, "array_len_address")):
+            let temporary: i64 = cv_getkey(v_e, "temp_slot")
+            let offset: i64 = cce_soff(v_self, cv_subscript(cv_getkey(v_self, "slots"), temporary))
+            cce_emit_ctor(v_self, v_e, offset)
+            cce_e(v_self, cv_mod(cv_text("lea rax, [rbp%+d]"), offset))
+            return cv_getkey(v_e, "type")
         cc_error(cv_text("конструктор структуры не адресуемый"), cv_getkey(cv_getkey(v_self, "cur"), "file"), cv_getkey(v_e, "line"))
         return 0
-    if (cv_classes(v_e, "Call") and cv_truth(cc_is_struct(cv_get(v_e, cv_text("type"), 0)))):
+    if cv_classes(v_e, "Call") and (cv_classes(cv_getkey(v_e, "type"), "TStruct") or cv_classes(cv_getkey(v_e, "type"), "TSlice")):
         cce_expr_call(v_self, v_e)
         return cv_getkey(v_e, "type")
+    if cv_classes(v_e, "Unary") and cv_name(cv_getkey(v_e, "op"), "?") and cv_classes(cv_getkey(v_e, "type"), "TStruct"):
+        return cce_expr_propagate(v_self, v_e)
     cc_error(cv_text("невозможно взять адрес этого выражения"), cv_getkey(cv_getkey(v_self, "cur"), "file"), cv_getkey(v_e, "line"))
     return 0
 
@@ -612,23 +628,10 @@ unsafe fn cce_expr_propagate(v_self: i64, v_e: i64) -> i64:
     let v_fail: i64 = 0
     let v_done: i64 = 0
     let v_success_tag: i64 = 0
-    let v_payload: i64 = 0
     v_typ = cv_getkey(v_e, "wrapper_type")
     v_src = cce_talloc(v_self)
-    if (cv_classes(cv_getkey(v_e, "x"), "Call") and (cv_equal(cv_get(cv_getkey(v_e, "x"), cv_text("kindt"), 0), cv_text("wrapper_ctor")))):
-        cce_emit_wrapper_ctor(v_self, cv_getkey(v_e, "x"), cce_toff(v_self, v_src))
-        let pieces_1: i64 = cv_list()
-        cv_push(pieces_1, cv_text("lea rax, [rbp"))
-        cv_push(pieces_1, cv_format(cce_toff(v_self, v_src), "+d"))
-        cv_push(pieces_1, cv_text("]"))
-        cce_e(v_self, cv_join(cv_text(""), pieces_1))
-    else:
-        cce_expr_value(v_self, cv_getkey(v_e, "x"), 0)
-        let pieces_2: i64 = cv_list()
-        cv_push(pieces_2, cv_text("mov qword ptr [rbp"))
-        cv_push(pieces_2, cv_format(cce_toff(v_self, v_src), "+d"))
-        cv_push(pieces_2, cv_text("], rax"))
-        cce_e(v_self, cv_join(cv_text(""), pieces_2))
+    cce_expr_value(v_self, cv_getkey(v_e, "x"), 0)
+    cce_e(v_self, cv_mod(cv_text("mov qword ptr [rbp%+d], rax"), cce_toff(v_self, v_src)))
     v_fail = cce_lbl(v_self)
     v_done = cce_lbl(v_self)
     let choice_3: i64 = 0
@@ -637,26 +640,23 @@ unsafe fn cce_expr_propagate(v_self: i64, v_e: i64) -> i64:
     else:
         choice_3 = 3
     v_success_tag = choice_3
-    let pieces_4: i64 = cv_list()
-    cv_push(pieces_4, cv_text("mov rax, qword ptr [rbp"))
-    cv_push(pieces_4, cv_format(cce_toff(v_self, v_src), "+d"))
-    cv_push(pieces_4, cv_text("]"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_4))
     cce_e(v_self, cv_mod(cv_text("cmp qword ptr [rax], %d"), v_success_tag))
     cce_e(v_self, cv_cat(cv_text("jne "), cv_format(v_fail, "")))
-    let pieces_5: i64 = cv_list()
-    cv_push(pieces_5, cv_text("mov rax, qword ptr [rbp"))
-    cv_push(pieces_5, cv_format(cce_toff(v_self, v_src), "+d"))
-    cv_push(pieces_5, cv_text("]"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_5))
     if cv_truth(cv_getkey(v_typ, "payload_off")):
         cce_e(v_self, cv_cat(cv_text("add rax, "), cv_format(cv_getkey(v_typ, "payload_off"), "")))
-    v_payload = cce_load_from_mem(v_self, cv_subscript(cv_getkey(v_typ, "args"), 3))
+    let payload: i64 = cv_at(cv_getkey(v_typ, "args"), 0)
+    if cv_classes(payload, "TStruct") or cc_is_tagged_value(payload):
+        let off: i64 = cce_soff(v_self, cv_at(cv_getkey(v_self, "slots"), cv_index(cv_getkey(v_e, "temp_slot"))))
+        cce_copy_from_rax(v_self, off, cc_type_size(payload))
+        cce_e(v_self, cv_mod(cv_text("lea rax, [rbp%+d]"), off))
+    else:
+        cce_load_from_mem(v_self, payload)
     cce_e(v_self, cv_cat(cv_text("jmp "), cv_format(v_done, "")))
     cce_label(v_self, v_fail, 0)
     cce_emit_propagated_wrapper_return(v_self, v_typ, v_src)
     cce_label(v_self, v_done, 0)
-    return v_payload
+    cce_trelease(v_self, v_src)
+    return payload
 
 unsafe fn cce_expr_value(v_self: i64, v_e: i64, v_hint_int: i64) -> i64:
     let v_t: i64 = 0
@@ -704,7 +704,7 @@ unsafe fn cce_expr_value(v_self: i64, v_e: i64, v_hint_int: i64) -> i64:
         cv_push(pieces_3, cv_text("]"))
         cce_e(v_self, cv_join(cv_text(""), pieces_3))
         return cv_getkey(cv_getkey(v_self, "sem"), "_string")
-    if cv_classes(v_e, "VarRef"):
+    if cv_classes(v_e, "VarRef") or cv_has(v_e, cv_text("const_binding")):
         if cv_has(v_e, cv_text("const_binding")):
             v_val = cv_subscript(cv_getkey(v_e, "const_binding"), 11)
             v_typ = cv_subscript(cv_getkey(v_e, "const_binding"), 3)
@@ -755,32 +755,23 @@ unsafe fn cce_expr_value(v_self: i64, v_e: i64, v_hint_int: i64) -> i64:
         return 0
     if cv_classes(v_e, "Binary"):
         return cce_expr_binary(v_self, v_e)
+    if cc_is_sum_ctor(v_e):
+        v_temp = cv_getkey(v_e, "temp_slot")
+        let off: i64 = 0
+        if v_temp != 0:
+            off = cce_soff(v_self, cv_subscript(cv_getkey(v_self, "slots"), v_temp))
+        else:
+            off = cce_toff(v_self, cce_talloc(v_self))
+        cce_emit_sum_ctor(v_self, v_e, off)
+        cce_e(v_self, cv_mod(cv_text("lea rax, [rbp%+d]"), off))
+        return v_t
     if cv_classes(v_e, "Call"):
-        if (cv_equal(cv_get(v_e, cv_text("kindt"), 0), cv_text("wrapper_ctor"))):
-            v_temp = cv_get(v_e, cv_text("temp_slot"), 0)
-            if (not (v_temp == 0)):
-                cce_emit_wrapper_ctor(v_self, v_e, cce_soff(v_self, cv_subscript(cv_getkey(v_self, "slots"), v_temp)))
-                let pieces_5: i64 = cv_list()
-                cv_push(pieces_5, cv_text("lea rax, [rbp"))
-                cv_push(pieces_5, cv_format(cce_soff(v_self, cv_subscript(cv_getkey(v_self, "slots"), v_temp)), "+d"))
-                cv_push(pieces_5, cv_text("]"))
-                cce_e(v_self, cv_join(cv_text(""), pieces_5))
-            else:
-                v_temp = cce_talloc(v_self)
-                cce_emit_wrapper_ctor(v_self, v_e, cce_toff(v_self, v_temp))
-                let pieces_6: i64 = cv_list()
-                cv_push(pieces_6, cv_text("lea rax, [rbp"))
-                cv_push(pieces_6, cv_format(cce_toff(v_self, v_temp), "+d"))
-                cv_push(pieces_6, cv_text("]"))
-                cce_e(v_self, cv_join(cv_text(""), pieces_6))
-            return cv_getkey(v_e, "type")
         return cce_expr_call(v_self, v_e)
     if cv_classes(v_e, "Index"):
         v_at = cce_eaddr(v_self, v_e)
         return cce_load_from_mem(v_self, v_at)
     if cv_classes(v_e, "SliceExpr"):
-        cce_emit_slice(v_self, v_e)
-        return cv_getkey(v_e, "slice_type")
+        return cce_eaddr(v_self, v_e)
     if cv_classes(v_e, "Member"):
         if cv_has(v_e, cv_text("enum_value")):
             cce_e(v_self, cv_cat(cv_text("mov rax, "), cv_format(cv_getkey(v_e, "enum_value"), "")))
@@ -837,7 +828,7 @@ unsafe fn cce_load_from_mem(v_self: i64, v_t: i64) -> i64:
         return v_t
     if cv_classes(v_t, "TSlice"):
         return v_t
-    if cv_classes(v_t, "TWrapper"):
+    if cc_is_tagged_value(v_t):
         return v_t
     cc_error(cv_add(cv_text("load_from_mem "), cc_display(v_t)), 0, 0)
     return 0
@@ -845,9 +836,7 @@ unsafe fn cce_load_from_mem(v_self: i64, v_t: i64) -> i64:
 unsafe fn cce_expr_binary(v_self: i64, v_e: i64) -> i64:
     let v_op: i64 = 0
     let v_name: i64 = 0
-    let v_swap: i64 = 0
     let v_fn: i64 = 0
-    let v_args: i64 = 0
     let v_result: i64 = 0
     let v_lf: i64 = 0
     let v_le: i64 = 0
@@ -861,9 +850,7 @@ unsafe fn cce_expr_binary(v_self: i64, v_e: i64) -> i64:
     let v_sz: i64 = 0
     v_op = cv_getkey(v_e, "op")
     if cv_truth(cv_get(v_e, cv_text("sugar"), 0)):
-        let unpack_1: i64 = cv_getkey(v_e, "sugar")
-        v_name = cv_at(unpack_1, 0)
-        v_swap = cv_at(unpack_1, 1)
+        v_name = cv_at(cv_getkey(v_e, "sugar"), 0)
         v_fn = cv_get(cv_getkey(cv_getkey(v_self, "sem"), "fns"), v_name, 0)
         if (v_fn == 0):
             let pieces_2: i64 = cv_list()
@@ -872,18 +859,7 @@ unsafe fn cce_expr_binary(v_self: i64, v_e: i64) -> i64:
             cv_push(pieces_2, cv_text(": модуль str не загружен"))
             cc_error(cv_join(cv_text(""), pieces_2), cv_getkey(cv_getkey(v_self, "cur"), "file"), cv_getkey(v_e, "line"))
             return 0
-        let choice_3: i64 = 0
-        if cv_truth(v_swap):
-            let items_4: i64 = cv_vector(CV_LIST)
-            cv_push(items_4, cv_getkey(v_e, "r"))
-            cv_push(items_4, cv_getkey(v_e, "l"))
-            choice_3 = items_4
-        else:
-            let items_5: i64 = cv_vector(CV_LIST)
-            cv_push(items_5, cv_getkey(v_e, "l"))
-            cv_push(items_5, cv_getkey(v_e, "r"))
-            choice_3 = items_5
-        v_args = choice_3
+        let v_args: i64 = cv_pair(cv_getkey(v_e, "l"), cv_getkey(v_e, "r"))
         v_result = cce_call_gen(v_self, v_e, v_args, cv_getkey(v_fn, "sig_params"), cv_getkey(v_fn, "sig_ret"), cc_function_label(cv_getkey(v_fn, "name"), cv_getkey(v_fn, "file")))
         if cv_truth(cv_get(v_e, cv_text("negate_sugar"), CV_FALSE)):
             cce_e(v_self, cv_text("test rax, rax"))
@@ -1515,6 +1491,7 @@ unsafe fn cce_expr_cast(v_self: i64, v_e: i64) -> i64:
 const CC_ABI_GP: i64 = 0
 const CC_ABI_SSE: i64 = 1
 const CC_ABI_STACK: i64 = 2
+const CC_ABI_RECORD: i64 = 3
 
 struct CCEAbiCursor:
     gp: i64
@@ -1531,7 +1508,7 @@ struct CCEAbiArg:
     place: CCEAbiLocation
 
 unsafe fn cce_abi_has_sret(result: i64) -> bool:
-    return cv_classes(result, "TWrapper") or cv_classes(result, "TStruct")
+    return cc_is_tagged_value(result) or cv_classes(result, "TStruct")
 
 unsafe fn cce_abi_start(result: i64) -> CCEAbiCursor:
     let gp: i64 = 0
@@ -1554,6 +1531,22 @@ unsafe fn cce_abi_next(cursor: ptr<CCEAbiCursor>, typ: i64) -> CCEAbiLocation:
         cursor.gp += words
         return CCEAbiLocation(CC_ABI_GP, reg)
     # A slice either takes both GP registers or spills whole without consuming a GP register.
+    let offset: i64 = cursor.stack_bytes
+    cursor.stack_bytes += words * 8
+    return CCEAbiLocation(CC_ABI_STACK, offset)
+
+unsafe fn cce_c_record_next(cursor: ptr<CCEAbiCursor>, typ: i64) -> CCEAbiLocation:
+    let size: i64 = cv_index(cc_type_size(typ))
+    let words: i64 = (size + 7) / 8
+    let mask: i64 = cv_index(cv_getkey(typ, "c_abi"))
+    let sse: i64 = (mask & 1) + ((mask >> 1) & 1)
+    let gp: i64 = words - sse
+    if cursor.gp + gp <= 6 and cursor.sse + sse <= 8:
+        let index: i64 = cursor.gp + cursor.sse * 8
+        cursor.gp += gp
+        cursor.sse += sse
+        return CCEAbiLocation(CC_ABI_RECORD, index)
+    # SysV rolls back the allocation of the entire record if either class is exhausted.
     let offset: i64 = cursor.stack_bytes
     cursor.stack_bytes += words * 8
     return CCEAbiLocation(CC_ABI_STACK, offset)
@@ -1609,6 +1602,37 @@ unsafe fn cce_abi_in(emitter: i64, typ: i64, place: CCEAbiLocation, offset: i64)
             cce_abi_mov(emitter, "mov", scratch, cce_abi_mem("rbp", 16 + place.index + word * 8, width))
             cce_abi_mov(emitter, "mov", dest, scratch)
 
+unsafe fn cce_c_record_out(emitter: i64, typ: i64, place: CCEAbiLocation, offset: i64):
+    let gp: i64 = place.index % 8
+    let sse: i64 = place.index / 8
+    let mask: i64 = cv_index(cv_getkey(typ, "c_abi"))
+    for word in 0..(cv_index(cc_type_size(typ)) + 7) / 8:
+        let src: i64 = cce_abi_mem("rbp", offset + word * 8, 8)
+        if place.kind == CC_ABI_STACK:
+            cce_abi_mov(emitter, "mov", cv_text("r11"), src)
+            cce_abi_mov(emitter, "mov", cce_abi_mem("rsp", place.index + word * 8, 8), cv_text("r11"))
+        elif (mask & (1 << word)) != 0:
+            cce_abi_mov(emitter, "movsd", cce_abi_xmm(sse), src)
+            sse += 1
+        else:
+            cce_abi_mov(emitter, "mov", cv_at(cc_k_int_arg_regs, gp), src)
+            gp += 1
+
+unsafe fn cce_c_record_result(emitter: i64, typ: i64, offset: i64):
+    let mask: i64 = cv_index(cv_getkey(typ, "c_abi"))
+    let gp: i64 = 0
+    let sse: i64 = 0
+    for word in 0..(cv_index(cc_type_size(typ)) + 7) / 8:
+        let dest: i64 = cce_abi_mem("rbp", offset + word * 8, 8)
+        if (mask & (1 << word)) != 0:
+            cce_abi_mov(emitter, "movsd", dest, cce_abi_xmm(sse))
+            sse += 1
+        else:
+            let reg: i64 = cv_text("rax")
+            if gp != 0: reg = cv_text("rdx")
+            cce_abi_mov(emitter, "mov", dest, reg)
+            gp += 1
+
 unsafe fn cce_abi_c_result(emitter: i64, result: i64) -> i64:
     # The C ABI leaves the unused high bits of narrow scalar results unspecified.
     if cv_truth(cc_is_bool(result)): cce_e(emitter, cv_text("movzx eax, al"))
@@ -1618,8 +1642,6 @@ unsafe fn cce_abi_c_result(emitter: i64, result: i64) -> i64:
 unsafe fn cce_call_gen(v_self: i64, v_e: i64, v_args: i64, v_sig_params: i64, v_ret_type: i64, v_label: i64) -> i64:
     let v_base: i64 = 0
     let v_ret_idx: i64 = 0
-    let v_soff: i64 = 0
-    let v_temp: i64 = 0
     let v_s: i64 = 0
     v_base = cv_getkey(v_self, "nt")
     let callee: i64 = cv_getkey(v_e, "indirect_callee")
@@ -1633,70 +1655,64 @@ unsafe fn cce_call_gen(v_self: i64, v_e: i64, v_args: i64, v_sig_params: i64, v_
         target = cce_abi_mem("rbp", cv_index(cce_toff(v_self, index)), 8)
         cce_abi_mov(v_self, "mov", target, cv_text("rax"))
     let choice_1: i64 = 0
-    if cv_classes(v_ret_type, "TWrapper"):
+    if cv_classes(v_ret_type, "TWrapper") and cv_getkey(v_e, "temp_slot") == 0:
         choice_1 = cce_talloc(v_self)
     else:
         choice_1 = 0
     v_ret_idx = choice_1
+    let v_slice_result: i64 = 0
+    if cv_classes(v_ret_type, "TSlice"): v_slice_result = cce_talloc(v_self)
+    let c_extern: bool = cv_truth(cv_getkey(v_e, "c_extern"))
+    let c_result: bool = c_extern and cv_classes(v_ret_type, "TStruct")
+    let c_result_temp: i64 = 0
     let placement: CCEAbiCursor = cce_abi_start(v_ret_type)
+    if c_result:
+        placement.gp = 0
+        c_result_temp = cce_talloc(v_self)
     let count: i64 = cv_len(v_args)
     let args: ptr<CCEAbiArg> = cv_alloc(count * sizeof(CCEAbiArg)) as ptr<CCEAbiArg>
+    let sugar: i64 = cv_getkey(v_e, "sugar")
+    let swap: bool = sugar != 0 and cv_truth(cv_at(sugar, 1))
+    # Place arguments in signature order, but evaluate them in source order.
     for i in 0..count:
-        let v_a: i64 = cv_at(v_args, i)
         let v_pt: i64 = cv_at(v_sig_params, i)
         # Named signatures store (name, type) pairs; fnptr stores just the types.
         if callee == 0: v_pt = cv_at(v_pt, 1)
+        let index: i64 = i
+        if swap: index = count - 1 - i
+        args[index].typ = v_pt
+        if c_extern and cv_classes(v_pt, "TStruct"):
+            args[index].place = cce_c_record_next(&placement, v_pt)
+        else:
+            args[index].place = cce_abi_next(&placement, v_pt)
+    for i in 0..count:
+        let v_a: i64 = cv_at(v_args, i)
+        let v_pt: i64 = args[i].typ
         let v_idx: i64 = cce_talloc(v_self)
-        let place: CCEAbiLocation = cce_abi_next(&placement, v_pt)
-        args[i] = CCEAbiArg(v_pt, v_idx, place)
-        if cv_classes(v_pt, "TSlice"):
-            if cv_classes(v_a, "SliceExpr"):
-                cce_emit_slice(v_self, v_a)
-                let pieces_8: i64 = cv_list()
-                cv_push(pieces_8, cv_text("mov rdx, qword ptr [rbp"))
-                cv_push(pieces_8, cv_format(cce_toff(v_self, cv_getkey(v_a, "slice_pair_slot")), "+d"))
-                cv_push(pieces_8, cv_text("]"))
-                cce_e(v_self, cv_join(cv_text(""), pieces_8))
-                let pieces_9: i64 = cv_list()
-                cv_push(pieces_9, cv_text("mov qword ptr [rbp"))
-                cv_push(pieces_9, cv_format(cce_toff(v_self, v_idx), "+d"))
-                cv_push(pieces_9, cv_text("], rdx"))
-                cce_e(v_self, cv_join(cv_text(""), pieces_9))
-                let pieces_10: i64 = cv_list()
-                cv_push(pieces_10, cv_text("mov rax, qword ptr [rbp"))
-                cv_push(pieces_10, cv_format(cce_toff(v_self, cv_getkey(v_a, "slice_pair_slot")), "+d"))
-                cv_push(pieces_10, cv_text("+8]"))
-                cce_e(v_self, cv_join(cv_text(""), pieces_10))
+        args[i].temp = v_idx
+        if c_extern and cv_classes(v_pt, "TStruct"):
+            if cv_name(cv_getkey(v_a, "kindt"), "ctor"):
+                let src: i64 = cce_soff(v_self, cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_a, "temp_slot")))
+                cce_emit_ctor(v_self, v_a, src)
+                cce_e(v_self, cv_mod(cv_text("lea rax, [rbp%+d]"), src))
             else:
                 cce_eaddr(v_self, v_a)
-                cce_e(v_self, cv_text("mov rdx, qword ptr [rax]"))
-                let pieces_11: i64 = cv_list()
-                cv_push(pieces_11, cv_text("mov qword ptr [rbp"))
-                cv_push(pieces_11, cv_format(cce_toff(v_self, v_idx), "+d"))
-                cv_push(pieces_11, cv_text("], rdx"))
-                cce_e(v_self, cv_join(cv_text(""), pieces_11))
-                cce_e(v_self, cv_text("mov rax, qword ptr [rax+8]"))
-            let pieces_12: i64 = cv_list()
-            cv_push(pieces_12, cv_text("mov qword ptr [rbp"))
-            cv_push(pieces_12, cv_format(cce_toff(v_self, v_idx), "+d"))
-            cv_push(pieces_12, cv_text("+8], rax"))
-            cce_e(v_self, cv_join(cv_text(""), pieces_12))
+            let off: i64 = cce_toff(v_self, v_idx)
+            # Snapshot now: later arguments may mutate the source, and it can be shorter than eight bytes.
+            cce_e(v_self, cv_mod(cv_text("mov qword ptr [rbp%+d], 0"), off))
+            cce_e(v_self, cv_mod(cv_text("mov qword ptr [rbp%+d], 0"), cv_add(off, cv_i(8))))
+            cce_copy_from_rax(v_self, off, cc_type_size(v_pt))
+            continue
+        if cv_classes(v_pt, "TSlice"):
+            cce_eaddr(v_self, v_a)
+            cce_e(v_self, cv_text("mov rdx, qword ptr [rax]"))
+            cce_e(v_self, cv_text("mov rax, qword ptr [rax+8]"))
+            let off: i64 = cv_index(cce_toff(v_self, v_idx))
+            cce_abi_mov(v_self, "mov", cce_abi_mem("rbp", off, 8), cv_text("rdx"))
+            cce_abi_mov(v_self, "mov", cce_abi_mem("rbp", off + 8, 8), cv_text("rax"))
         else:
-            if cv_classes(v_pt, "TWrapper"):
-                if (cv_classes(v_a, "Call") and (cv_equal(cv_get(v_a, cv_text("kindt"), 0), cv_text("wrapper_ctor")))):
-                    if (not (cv_get(v_a, cv_text("temp_slot"), 0) == 0)):
-                        v_soff = cce_soff(v_self, cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_a, "temp_slot")))
-                    else:
-                        v_temp = cce_talloc(v_self)
-                        v_soff = cce_toff(v_self, v_temp)
-                    cce_emit_wrapper_ctor(v_self, v_a, v_soff)
-                    let pieces_13: i64 = cv_list()
-                    cv_push(pieces_13, cv_text("lea rax, [rbp"))
-                    cv_push(pieces_13, cv_format(v_soff, "+d"))
-                    cv_push(pieces_13, cv_text("]"))
-                    cce_e(v_self, cv_join(cv_text(""), pieces_13))
-                else:
-                    cce_expr_value(v_self, v_a, 0)
+            if cc_is_tagged_value(v_pt):
+                cce_expr_value(v_self, v_a, 0)
                 let pieces_14: i64 = cv_list()
                 cv_push(pieces_14, cv_text("mov qword ptr [rbp"))
                 cv_push(pieces_14, cv_format(cce_toff(v_self, v_idx), "+d"))
@@ -1741,7 +1757,7 @@ unsafe fn cce_call_gen(v_self: i64, v_e: i64, v_args: i64, v_sig_params: i64, v_
     let stack_size: i64 = (placement.stack_bytes + 15) & -16
     if stack_size != 0:
         cce_e(v_self, cv_cat(cv_text("sub rsp, "), cv_str(cv_i(stack_size))))
-    if cce_abi_has_sret(v_ret_type):
+    if not c_result and cce_abi_has_sret(v_ret_type):
         let result_off: i64 = 0
         if v_ret_idx != 0:
             result_off = cce_toff(v_self, v_ret_idx)
@@ -1752,26 +1768,46 @@ unsafe fn cce_call_gen(v_self: i64, v_e: i64, v_args: i64, v_sig_params: i64, v_
         cce_e(v_self, cv_text("mov rdi, rax"))
     for i in 0..count:
         let arg: CCEAbiArg = args[i]
-        cce_abi_out(v_self, arg.typ, arg.place, cv_index(cce_toff(v_self, arg.temp)))
+        cce_owner_flag(v_self, cv_getkey(cv_at(v_args, i), "owner_transfer"), 0)
+        let off: i64 = cv_index(cce_toff(v_self, arg.temp))
+        if c_extern and cv_classes(arg.typ, "TStruct"): cce_c_record_out(v_self, arg.typ, arg.place, off)
+        else: cce_abi_out(v_self, arg.typ, arg.place, off)
     cce_e(v_self, cv_cat(cv_text("call "), cv_format(target, "")))
+    cce_owner_flag(v_self, cv_getkey(v_e, "owner_result"), 1)
     if stack_size != 0:
         cce_e(v_self, cv_cat(cv_text("add rsp, "), cv_str(cv_i(stack_size))))
+    if c_result:
+        let off: i64 = cce_toff(v_self, c_result_temp)
+        let dest: i64 = cce_soff(v_self, cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_e, "temp_slot")))
+        cce_c_record_result(v_self, v_ret_type, cv_index(off))
+        cce_e(v_self, cv_mod(cv_text("lea rax, [rbp%+d]"), off))
+        cce_copy_from_rax(v_self, dest, cc_type_size(v_ret_type))
+        cce_e(v_self, cv_mod(cv_text("lea rax, [rbp%+d]"), dest))
+        cce_trelease(v_self, v_base)
+        return v_ret_type
+    if v_slice_result != 0:
+        # Ordinary VOLT functions return slice address and element count in rax:rdx.
+        let v_off: i64 = cce_toff(v_self, v_slice_result)
+        cce_abi_mov(v_self, "mov", cce_abi_mem("rbp", cv_index(v_off), 8), cv_text("rax"))
+        cce_abi_mov(v_self, "mov", cce_abi_mem("rbp", cv_index(v_off) + 8, 8), cv_text("rdx"))
+        cce_e(v_self, cv_mod(cv_text("lea rax, [rbp%+d]"), v_off))
+        cce_trelease(v_self, cv_add(v_slice_result, 11))
+        return v_ret_type
     if (not (v_ret_idx == 0)):
         cv_field(v_self, "nt", cv_add(v_ret_idx, 11))
-        if cv_classes(v_e, "Call"):
-            cv_field(v_e, "kindt", cv_text("wrapper_ctor_call"))
         let pieces_33: i64 = cv_list()
         cv_push(pieces_33, cv_text("lea rax, [rbp"))
         cv_push(pieces_33, cv_format(cce_toff(v_self, v_ret_idx), "+d"))
         cv_push(pieces_33, cv_text("]"))
         cce_e(v_self, cv_join(cv_text(""), pieces_33))
     else:
-        if cv_truth(cc_is_struct(v_ret_type)):
+        if cce_abi_has_sret(v_ret_type):
             let pieces_34: i64 = cv_list()
             cv_push(pieces_34, cv_text("lea rax, [rbp"))
             cv_push(pieces_34, cv_format(cce_soff(v_self, cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_e, "temp_slot"))), "+d"))
             cv_push(pieces_34, cv_text("]"))
             cce_e(v_self, cv_join(cv_text(""), pieces_34))
+            if cc_is_tagged_value(v_ret_type): cce_trelease(v_self, v_base)
         else:
             cce_trelease(v_self, v_base)
     return v_ret_type
@@ -1800,20 +1836,17 @@ unsafe fn cce_expr_call(v_self: i64, v_e: i64) -> i64:
     if (cv_equal(cv_get(v_e, cv_text("kindt"), 0), cv_text("ctor"))):
         cc_error(cv_text("конструктор структуры как значение не поддерживается"), cv_getkey(cv_getkey(v_self, "cur"), "file"), cv_get(v_e, cv_text("line"), 11))
         return 0
-    if (cv_equal(cv_get(v_e, cv_text("kindt"), 0), cv_text("wrapper_ctor"))):
-        cc_error(cv_text("wrapper constructor must be materialized in local storage"), cv_getkey(cv_getkey(v_self, "cur"), "file"), cv_get(v_e, cv_text("line"), 11))
-        return 0
     v_fn = cv_get(cv_getkey(cv_getkey(v_self, "sem"), "fns"), v_name, 0)
     if ((v_fn == 0) and cv_has(v_e, cv_text("generic_fn"))):
         v_fn = cv_getkey(v_e, "generic_fn")
     if v_fn != 0:
         let raw: bool = cv_getkey(v_fn, "native") != 0
         let external: bool = cv_getkey(v_fn, "body") == 0 and not raw
-        v_lbl = v_name
+        v_lbl = cv_get(v_fn, cv_text("source_name"), v_name)
         if not external:
             v_lbl = cc_function_label(cv_get(v_fn, cv_text("mangled_name"), cv_getkey(v_fn, "name")), cv_getkey(v_fn, "file"))
         let result: i64 = cce_call_gen(v_self, v_e, cv_getkey(v_e, "args"), cv_getkey(v_fn, "sig_params"), cv_getkey(v_fn, "sig_ret"), v_lbl)
-        if external or raw: return cce_abi_c_result(v_self, result)
+        if (external or raw) and not cv_classes(result, "TStruct"): return cce_abi_c_result(v_self, result)
         return result
     if (cv_contains(cc_k_irtis, v_name)):
         return cce_call_irtis(v_self, v_e, cv_subscript(cc_k_irtis, v_name))
@@ -1881,11 +1914,17 @@ unsafe fn cce_call_irtis(v_self: i64, v_e: i64, v_spec: i64) -> i64:
         v_fps = collect_3
         return cce_call_gen(v_self, v_e, v_args, v_fps, v_rtype, v_lbl)
     if (cv_equal(v_name, cv_text("len"))):
-        v_t = cv_getkey(cv_subscript(v_args, 3), "type")
+        let arg: i64 = cv_subscript(v_args, 3)
+        v_t = cv_getkey(arg, "type")
         if cv_classes(v_t, "TSlice"):
-            cce_eaddr(v_self, cv_subscript(v_args, 3))
+            cce_eaddr(v_self, arg)
             cce_e(v_self, cv_text("mov rax, qword ptr [rax + 8]"))
         else:
+            # The length is constant; evaluating an array expression need not be.
+            if not cv_classes(arg, "VarRef"):
+                let saved: i64 = cv_getkey(v_self, "nt")
+                cce_eaddr(v_self, arg)
+                cce_trelease(v_self, saved)
             cce_e(v_self, cv_cat(cv_text("mov rax, "), cv_format(cv_getkey(v_t, "n"), "")))
         return cc_int(CV_TRUE, 515)
     if ((cv_equal(v_name, cv_text("sin")) or cv_equal(v_name, cv_text("cos")) or cv_equal(v_name, cv_text("tan")) or cv_equal(v_name, cv_text("log2")))):
@@ -2279,6 +2318,11 @@ unsafe fn cce_copy_bytes(v_self: i64, v_size: i64) -> i64:
     cce_e(v_self, cv_text("rep movsb"))
     return 0
 
+unsafe fn cce_copy_from_rax(v_self: i64, off: i64, size: i64):
+    cce_e(v_self, cv_text("mov rsi, rax"))
+    cce_e(v_self, cv_mod(cv_text("lea rdi, [rbp%+d]"), off))
+    cce_copy_bytes(v_self, size)
+
 unsafe fn cce_memcopy(v_self: i64, v_dst_lea: i64, v_src_addr_e: i64, v_size: i64) -> i64:
     let v_t: i64 = 0
     if (cv_le(v_size, 3)):
@@ -2304,116 +2348,45 @@ unsafe fn cce_memcopy(v_self: i64, v_dst_lea: i64, v_src_addr_e: i64, v_size: i6
     return 0
 
 unsafe fn cce_emit_slice(v_self: i64, v_expr: i64) -> i64:
-    let v_base: i64 = 0
-    let v_bound: i64 = 0
-    let v_lo: i64 = 0
-    let v_hi: i64 = 0
-    let v_bad: i64 = 0
-    let v_valid: i64 = 0
-    let v_pair: i64 = 0
-    let choice_1: i64 = 0
-    if cv_classes(cv_getkey(v_expr, "owner_slot"), "int"):
-        choice_1 = cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_expr, "owner_slot"))
+    let v_base: i64 = cv_getkey(v_expr, "base")
+    let v_typ: i64 = cv_getkey(v_base, "type")
+    let v_pair: i64 = cce_talloc(v_self)
+    let v_offset: i64 = cv_index(cce_toff(v_self, v_pair))
+    let v_address: i64 = cce_abi_mem("rbp", v_offset, 8)
+    let v_length: i64 = cce_abi_mem("rbp", v_offset + 8, 8)
+    cce_eaddr(v_self, v_base)
+    if cv_classes(v_typ, "TSlice"):
+        cce_e(v_self, cv_text("mov rdx, qword ptr [rax+8]"))
+        cce_e(v_self, cv_text("mov rax, qword ptr [rax]"))
     else:
-        choice_1 = cv_getkey(v_expr, "owner_slot")
-    v_base = choice_1
-    let seq_3: i64 = cv_pair(cv_getkey(v_expr, "start"), cv_getkey(v_expr, "end"))
-    for index_2 in 0..cv_len(seq_3):
-        v_bound = cv_at(seq_3, index_2)
-        cv_field(v_bound, "temp_slot", cce_talloc(v_self))
-        cce_expr_value(v_self, v_bound, 0)
-        let pieces_4: i64 = cv_list()
-        cv_push(pieces_4, cv_text("mov qword ptr [rbp"))
-        cv_push(pieces_4, cv_format(cce_toff(v_self, cv_getkey(v_bound, "temp_slot")), "+d"))
-        cv_push(pieces_4, cv_text("], rax"))
-        cce_e(v_self, cv_join(cv_text(""), pieces_4))
-    let unpack_5: i64 = cv_pair(cce_talloc(v_self), cce_talloc(v_self))
-    v_lo = cv_at(unpack_5, 0)
-    v_hi = cv_at(unpack_5, 1)
-    let pieces_6: i64 = cv_list()
-    cv_push(pieces_6, cv_text("mov rax, qword ptr [rbp"))
-    cv_push(pieces_6, cv_format(cce_toff(v_self, cv_getkey(cv_getkey(v_expr, "start"), "temp_slot")), "+d"))
-    cv_push(pieces_6, cv_text("]"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_6))
-    let pieces_7: i64 = cv_list()
-    cv_push(pieces_7, cv_text("mov qword ptr [rbp"))
-    cv_push(pieces_7, cv_format(cce_toff(v_self, v_lo), "+d"))
-    cv_push(pieces_7, cv_text("], rax"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_7))
-    let pieces_8: i64 = cv_list()
-    cv_push(pieces_8, cv_text("mov rax, qword ptr [rbp"))
-    cv_push(pieces_8, cv_format(cce_toff(v_self, cv_getkey(cv_getkey(v_expr, "end"), "temp_slot")), "+d"))
-    cv_push(pieces_8, cv_text("]"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_8))
-    let pieces_9: i64 = cv_list()
-    cv_push(pieces_9, cv_text("mov qword ptr [rbp"))
-    cv_push(pieces_9, cv_format(cce_toff(v_self, v_hi), "+d"))
-    cv_push(pieces_9, cv_text("], rax"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_9))
-    let unpack_10: i64 = cv_pair(cce_lbl(v_self), cce_lbl(v_self))
-    v_bad = cv_at(unpack_10, 0)
-    v_valid = cv_at(unpack_10, 1)
-    let pieces_11: i64 = cv_list()
-    cv_push(pieces_11, cv_text("mov rax, qword ptr [rbp"))
-    cv_push(pieces_11, cv_format(cce_toff(v_self, v_lo), "+d"))
-    cv_push(pieces_11, cv_text("]"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_11))
-    cce_e(v_self, cv_text("test rax, rax"))
-    cce_e(v_self, cv_cat(cv_text("js "), cv_format(v_bad, "")))
-    let pieces_12: i64 = cv_list()
-    cv_push(pieces_12, cv_text("mov rcx, qword ptr [rbp"))
-    cv_push(pieces_12, cv_format(cce_toff(v_self, v_hi), "+d"))
-    cv_push(pieces_12, cv_text("]"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_12))
+        cce_e(v_self, cv_cat(cv_text("mov rdx, "), cv_format(cv_getkey(v_typ, "n"), "")))
+    cce_abi_mov(v_self, "mov", v_address, cv_text("rax"))
+    cce_abi_mov(v_self, "mov", v_length, cv_text("rdx"))
+    let v_bound: i64 = cce_talloc(v_self)
+    let v_lo: i64 = cce_abi_mem("rbp", cv_index(cce_toff(v_self, v_bound)), 8)
+    cce_expr_value(v_self, cv_getkey(v_expr, "start"), 0)
+    cce_abi_mov(v_self, "mov", v_lo, cv_text("rax"))
+    cce_expr_value(v_self, cv_getkey(v_expr, "end"), 0)
+    cce_abi_mov(v_self, "mov", cv_text("rcx"), v_lo)
+    let v_bad: i64 = cce_lbl(v_self)
+    let v_valid: i64 = cce_lbl(v_self)
+    # rax = end, rcx = start. After 0 <= start <= end, end is also non-negative.
     cce_e(v_self, cv_text("test rcx, rcx"))
     cce_e(v_self, cv_cat(cv_text("js "), cv_format(v_bad, "")))
-    cce_e(v_self, cv_text("cmp rax, rcx"))
+    cce_e(v_self, cv_text("cmp rcx, rax"))
     cce_e(v_self, cv_cat(cv_text("jg "), cv_format(v_bad, "")))
-    cce_e(v_self, cv_cat(cv_text("cmp rcx, "), cv_format(cv_getkey(cv_getkey(v_base, "typ"), "n"), "")))
+    cce_abi_mov(v_self, "cmp", cv_text("rax"), v_length)
     cce_e(v_self, cv_cat(cv_text("jg "), cv_format(v_bad, "")))
     cce_e(v_self, cv_cat(cv_text("jmp "), cv_format(v_valid, "")))
     cce_label(v_self, v_bad, 0)
     cce_emit_panic(v_self, cv_text("volt: invalid slice range\n"))
     cce_label(v_self, v_valid, 0)
-    let pieces_13: i64 = cv_list()
-    cv_push(pieces_13, cv_text("lea rax, [rbp"))
-    cv_push(pieces_13, cv_format(cce_soff(v_self, v_base), "+d"))
-    cv_push(pieces_13, cv_text("]"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_13))
-    let pieces_14: i64 = cv_list()
-    cv_push(pieces_14, cv_text("imul rdx, qword ptr [rbp"))
-    cv_push(pieces_14, cv_format(cce_toff(v_self, v_lo), "+d"))
-    cv_push(pieces_14, cv_text("], "))
-    cv_push(pieces_14, cv_format(cc_type_size(cv_getkey(cv_getkey(v_expr, "slice_type"), "elem")), ""))
-    cce_e(v_self, cv_join(cv_text(""), pieces_14))
-    cce_e(v_self, cv_text("add rax, rdx"))
-    v_pair = cce_talloc(v_self)
-    let pieces_15: i64 = cv_list()
-    cv_push(pieces_15, cv_text("mov qword ptr [rbp"))
-    cv_push(pieces_15, cv_format(cce_toff(v_self, v_pair), "+d"))
-    cv_push(pieces_15, cv_text("], rax"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_15))
-    let pieces_16: i64 = cv_list()
-    cv_push(pieces_16, cv_text("mov rax, qword ptr [rbp"))
-    cv_push(pieces_16, cv_format(cce_toff(v_self, v_hi), "+d"))
-    cv_push(pieces_16, cv_text("]"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_16))
-    let pieces_17: i64 = cv_list()
-    cv_push(pieces_17, cv_text("sub rax, qword ptr [rbp"))
-    cv_push(pieces_17, cv_format(cce_toff(v_self, v_lo), "+d"))
-    cv_push(pieces_17, cv_text("]"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_17))
-    let pieces_18: i64 = cv_list()
-    cv_push(pieces_18, cv_text("mov qword ptr [rbp"))
-    cv_push(pieces_18, cv_format(cce_toff(v_self, v_pair), "+d"))
-    cv_push(pieces_18, cv_text("+8], rax"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_18))
-    let pieces_19: i64 = cv_list()
-    cv_push(pieces_19, cv_text("lea rax, [rbp"))
-    cv_push(pieces_19, cv_format(cce_toff(v_self, v_pair), "+d"))
-    cv_push(pieces_19, cv_text("]"))
-    cce_e(v_self, cv_join(cv_text(""), pieces_19))
-    cv_field(v_expr, "slice_pair_slot", v_pair)
+    cce_e(v_self, cv_text("sub rax, rcx"))
+    cce_abi_mov(v_self, "mov", v_length, cv_text("rax"))
+    cce_e(v_self, cv_cat(cv_text("imul rcx, rcx, "), cv_format(cc_type_size(cv_getkey(v_typ, "elem")), "")))
+    cce_abi_mov(v_self, "add", v_address, cv_text("rcx"))
+    cce_e(v_self, cv_mod(cv_text("lea rax, [rbp%+d]"), cce_toff(v_self, v_pair)))
+    cce_trelease(v_self, cv_add(v_pair, 11))
     return 0
 
 unsafe fn cce_begin_stmt(v_self: i64) -> i64:
@@ -2426,7 +2399,14 @@ unsafe fn cce_emit_stmts(v_self: i64, v_stmts: i64) -> i64:
     let v_flag: i64 = 0
     let items_1: i64 = cv_vector(CV_LIST)
     v_frame = items_1
-    cv_push(cv_getkey(v_self, "defer_frames"), v_frame)
+    let scopes: i64 = cv_getkey(cv_getkey(v_self, "cur"), "owner_scopes")
+    let owners: i64 = cv_get(scopes, cv_i(v_stmts), 0)
+    cv_push(cv_getkey(v_self, "defer_frames"), cv_pair(v_frame, owners))
+    for i in 0..cv_len(owners):
+        let slot: i64 = cv_at(owners, i)
+        let live: i64 = 0
+        if cv_name(cv_getkey(slot, "kind"), "param"): live = 1
+        cce_owner_flag(v_self, slot, live)
     let seq_3: i64 = v_stmts
     for index_2 in 0..cv_len(seq_3):
         v_st = cv_at(seq_3, index_2)
@@ -2451,8 +2431,32 @@ unsafe fn cce_emit_stmts(v_self: i64, v_stmts: i64) -> i64:
         else:
             cce_emit_stmt(v_self, v_st)
     cce_emit_defer_frame(v_self, v_frame)
+    cce_drop_owners(v_self, owners)
     cv_pop(cv_getkey(v_self, "defer_frames"))
     return 0
+
+unsafe fn cce_owner_flag_addr(emitter: i64, slot: i64) -> i64:
+    let flag: i64 = cv_getkey(slot, "owner_flag")
+    if flag == 0: return 0
+    return cce_soff(emitter, cv_subscript(cv_getkey(emitter, "slots"), flag))
+
+unsafe fn cce_owner_flag(emitter: i64, slot: i64, live: i64):
+    let off: i64 = cce_owner_flag_addr(emitter, slot)
+    if off != 0: cce_e(emitter, cv_mod(cv_text("mov qword ptr [rbp%+d], %d"), cv_pair(off, cv_i(live))))
+
+unsafe fn cce_drop_owner(emitter: i64, slot: i64):
+    let off: i64 = cce_owner_flag_addr(emitter, slot)
+    let skip: i64 = cce_lbl(emitter)
+    let file: i64 = cv_getkey(cv_getkey(emitter, "sem"), "owned_buffer_file")
+    cce_e(emitter, cv_mod(cv_text("cmp qword ptr [rbp%+d], 0"), off))
+    cce_e(emitter, cv_cat(cv_text("je "), skip))
+    cce_owner_flag(emitter, slot, 0)
+    cce_e(emitter, cv_mod(cv_text("lea rdi, [rbp%+d]"), cce_soff(emitter, slot)))
+    cce_e(emitter, cv_cat(cv_text("call "), cc_function_label(cv_text("__volt_owned_buffer_drop"), file)))
+    cce_label(emitter, skip, 0)
+
+unsafe fn cce_drop_owners(emitter: i64, owners: i64):
+    for i in 0..cv_len(owners): cce_drop_owner(emitter, cv_at(owners, -1 - i))
 
 unsafe fn cce_emit_defer_frame(v_self: i64, v_frame: i64) -> i64:
     let v_st: i64 = 0
@@ -2489,13 +2493,17 @@ unsafe fn cce_emit_cleanup_scopes(v_self: i64, v_count: i64) -> i64:
     let seq_2: i64 = cv_reverse(choice_3)
     for index_1 in 0..cv_len(seq_2):
         v_frame = cv_at(seq_2, index_1)
-        cce_emit_defer_frame(v_self, v_frame)
+        cce_emit_defer_frame(v_self, cv_at(v_frame, 0))
+        cce_drop_owners(v_self, cv_at(v_frame, 1))
     return 0
 
 unsafe fn cce_emit_stmt(v_self: i64, v_st: i64) -> i64:
     cce_begin_stmt(v_self)
     if cv_classes(v_st, "LetStmt"):
         cce_st_let(v_self, v_st)
+        let slot: i64 = cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_st, "slot"))
+        cce_owner_flag(v_self, cv_getkey(cv_getkey(v_st, "init"), "owner_transfer"), 0)
+        cce_owner_flag(v_self, slot, 1)
     else:
         if cv_classes(v_st, "AssignStmt"):
             cce_st_assign(v_self, v_st)
@@ -2550,15 +2558,10 @@ unsafe fn cce_emit_match(v_self: i64, v_st: i64) -> i64:
     let v_nxt: i64 = 0
     let v_tag: i64 = 0
     let v_off: i64 = 0
-    v_t = cv_getkey(cv_getkey(v_st, "value"), "type")
+    let value: i64 = cv_getkey(v_st, "value")
+    v_t = cv_getkey(value, "type")
     v_source = cce_talloc(v_self)
-    if cv_classes(v_t, "TWrapper"):
-        cce_expr_value(v_self, cv_getkey(v_st, "value"), 0)
-    else:
-        if cv_classes(v_t, "TStruct"):
-            cce_eaddr(v_self, cv_getkey(v_st, "value"))
-        else:
-            cce_expr_value(v_self, cv_getkey(v_st, "value"), 0)
+    cce_expr_value(v_self, value, 0)
     let pieces_1: i64 = cv_list()
     cv_push(pieces_1, cv_text("mov qword ptr [rbp"))
     cv_push(pieces_1, cv_format(cce_toff(v_self, v_source), "+d"))
@@ -2575,21 +2578,14 @@ unsafe fn cce_emit_match(v_self: i64, v_st: i64) -> i64:
         else:
             choice_4 = cv_getkey(v_arm, "tag")
         v_tag = choice_4
-        if cv_classes(v_t, "TEnum"):
-            let pieces_5: i64 = cv_list()
-            cv_push(pieces_5, cv_text("mov rax, qword ptr [rbp"))
-            cv_push(pieces_5, cv_format(cce_toff(v_self, v_source), "+d"))
-            cv_push(pieces_5, cv_text("]"))
-            cce_e(v_self, cv_join(cv_text(""), pieces_5))
-        else:
-            let pieces_6: i64 = cv_list()
-            cv_push(pieces_6, cv_text("mov rax, qword ptr [rbp"))
-            cv_push(pieces_6, cv_format(cce_toff(v_self, v_source), "+d"))
-            cv_push(pieces_6, cv_text("]"))
-            cce_e(v_self, cv_join(cv_text(""), pieces_6))
-            cce_e(v_self, cv_text("mov rax, qword ptr [rax]"))
+        cce_e(v_self, cv_mod(cv_text("mov rax, qword ptr [rbp%+d]"), cce_toff(v_self, v_source)))
+        if cc_is_tagged_value(v_t): cce_e(v_self, cv_text("mov rax, qword ptr [rax]"))
         if (not (v_tag == 0)):
-            cce_e(v_self, cv_cat(cv_text("cmp rax, "), cv_format(v_tag, "")))
+            if cc_tag_imm32(v_tag):
+                cce_e(v_self, cv_cat(cv_text("cmp rax, "), cv_format(v_tag, "")))
+            else:
+                cce_e(v_self, cv_cat(cv_text("mov rdx, "), cv_format(v_tag, "")))
+                cce_e(v_self, cv_text("cmp rax, rdx"))
             cce_e(v_self, cv_cat(cv_text("jne "), cv_format(v_nxt, "")))
         if cv_truth(cv_getkey(v_arm, "binding")):
             v_off = cv_getkey(v_t, "payload_off")
@@ -2624,10 +2620,10 @@ unsafe fn cce_st_let(v_self: i64, v_st: i64) -> i64:
     let v_t: i64 = 0
     v_s = cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_st, "slot"))
     v_init = cv_getkey(v_st, "init")
-    if ((not (v_init == 0)) and (cv_equal(cv_get(v_init, cv_text("kindt"), 0), cv_text("wrapper_ctor")))):
-        cce_emit_wrapper_ctor(v_self, v_init, cce_soff(v_self, v_s))
+    if cc_is_sum_ctor(v_init):
+        cce_emit_sum_ctor(v_self, v_init, cce_soff(v_self, v_s))
         return 0
-    if (cv_classes(cv_getkey(v_s, "typ"), "TWrapper") and (not (v_init == 0))):
+    if cc_is_tagged_value(cv_getkey(v_s, "typ")) and v_init != 0:
         cce_expr_value(v_self, v_init, 0)
         v_tmp = cce_talloc(v_self)
         let pieces_1: i64 = cv_list()
@@ -2649,22 +2645,7 @@ unsafe fn cce_st_let(v_self: i64, v_st: i64) -> i64:
         cce_e(v_self, cv_text("cld"))
         cce_e(v_self, cv_text("rep movsb"))
         return 0
-    if (cv_classes(cv_getkey(v_s, "typ"), "TSlice") and cv_classes(v_init, "SliceExpr")):
-        cce_emit_slice(v_self, v_init)
-        let pieces_4: i64 = cv_list()
-        cv_push(pieces_4, cv_text("lea rsi, [rbp"))
-        cv_push(pieces_4, cv_format(cce_toff(v_self, cv_getkey(v_init, "slice_pair_slot")), "+d"))
-        cv_push(pieces_4, cv_text("]"))
-        cce_e(v_self, cv_join(cv_text(""), pieces_4))
-        let pieces_5: i64 = cv_list()
-        cv_push(pieces_5, cv_text("lea rdi, [rbp"))
-        cv_push(pieces_5, cv_format(cce_soff(v_self, v_s), "+d"))
-        cv_push(pieces_5, cv_text("]"))
-        cce_e(v_self, cv_join(cv_text(""), pieces_5))
-        cce_copy_bytes(v_self, 131)
-        cv_field(v_s, "owner_slot", cv_getkey(v_init, "owner_slot"))
-        return 0
-    if (cv_classes(cv_getkey(v_s, "typ"), "TSlice") and cv_classes(v_init, "VarRef") and cv_classes(cv_getkey(v_init, "type"), "TSlice")):
+    if cv_classes(cv_getkey(v_s, "typ"), "TSlice"):
         cce_eaddr(v_self, v_init)
         cce_e(v_self, cv_text("mov rsi, rax"))
         let pieces_6: i64 = cv_list()
@@ -2672,8 +2653,7 @@ unsafe fn cce_st_let(v_self: i64, v_st: i64) -> i64:
         cv_push(pieces_6, cv_format(cce_soff(v_self, v_s), "+d"))
         cv_push(pieces_6, cv_text("]"))
         cce_e(v_self, cv_join(cv_text(""), pieces_6))
-        cce_copy_bytes(v_self, 131)
-        cv_field(v_s, "owner_slot", cv_get(cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_init, "slot")), cv_text("owner_slot"), 0))
+        cce_copy_bytes(v_self, cv_getkey(v_s, "size"))
         return 0
     if ((not (v_init == 0)) and (cv_equal(cv_get(v_init, cv_text("kindt"), 0), cv_text("ctor")))):
         cce_emit_ctor(v_self, v_init, cce_soff(v_self, v_s))
@@ -2748,28 +2728,37 @@ unsafe fn cce_st_let(v_self: i64, v_st: i64) -> i64:
     cce_store_scalar(v_self, cce_soff(v_self, v_s), cv_getkey(v_s, "typ"), choice_14)
     return 0
 
-unsafe fn cce_emit_wrapper_ctor(v_self: i64, v_ctor: i64, v_base_soff: i64) -> i64:
+unsafe fn cc_tag_imm32(tag: i64) -> bool:
+    return not cv_less(tag, cv_i(-2147483648)) and not cv_less(cv_i(2147483647), tag)
+
+unsafe fn cce_emit_sum_ctor(v_self: i64, v_ctor: i64, v_base_soff: i64) -> i64:
     let v_typ: i64 = 0
     let v_arg: i64 = 0
     let v_pt: i64 = 0
     let v_at: i64 = 0
     v_typ = cv_getkey(v_ctor, "type")
     cce_zero_range(v_self, v_base_soff, cv_getkey(v_typ, "size"))
-    let pieces_1: i64 = cv_list()
-    cv_push(pieces_1, cv_text("mov qword ptr [rbp"))
-    cv_push(pieces_1, cv_format(v_base_soff, "+d"))
-    cv_push(pieces_1, cv_text("], "))
-    cv_push(pieces_1, cv_format(cv_getkey(v_ctor, "variant"), ""))
-    cce_e(v_self, cv_join(cv_text(""), pieces_1))
-    let logic_3: bool = cv_truth(cv_getkey(v_ctor, "args"))
-    if logic_3:
-        let subject_2: i64 = cv_getkey(v_ctor, "variant")
-        logic_3 = ((cv_equal(subject_2, 3) or cv_equal(subject_2, 11)))
-    if (logic_3 and not ((cv_equal(cv_getkey(v_ctor, "name"), cv_text("None"))))):
+    let tag: i64 = cv_getkey(v_ctor, "variant")
+    if cc_tag_imm32(tag):
+        cce_e(v_self, cv_mod(cv_text("mov qword ptr [rbp%+d], %d"), cv_pair(v_base_soff, tag)))
+    else:
+        cce_e(v_self, cv_cat(cv_text("mov rax, "), cv_format(tag, "")))
+        cce_e(v_self, cv_mod(cv_text("mov qword ptr [rbp%+d], rax"), v_base_soff))
+    if cv_len(cv_getkey(v_ctor, "args")) != 0:
         v_arg = cv_subscript(cv_getkey(v_ctor, "args"), 3)
         v_pt = cv_getkey(v_arg, "type")
         v_at = cv_add(v_base_soff, cv_getkey(v_typ, "payload_off"))
+        if cv_classes(v_pt, "TStruct"):
+            if cv_name(cv_getkey(v_arg, "kindt"), "ctor"):
+                cce_emit_ctor(v_self, v_arg, v_at)
+            else:
+                cce_eaddr(v_self, v_arg)
+                cce_copy_from_rax(v_self, v_at, cc_type_size(v_pt))
+            return 0
         cce_expr_value(v_self, v_arg, 0)
+        if cc_is_tagged_value(v_pt):
+            cce_copy_from_rax(v_self, v_at, cc_type_size(v_pt))
+            return 0
         let choice_4: i64 = 0
         if cv_truth(cc_is_float(v_pt)):
             choice_4 = cv_text("float")
@@ -2824,8 +2813,6 @@ unsafe fn cce_st_assign(v_self: i64, v_st: i64) -> i64:
     let v_tt: i64 = 0
     let v_val: i64 = 0
     let v_slot: i64 = 0
-    let v_src: i64 = 0
-    let v_snap: i64 = 0
     let v_tmp: i64 = 0
     let v_s: i64 = 0
     let v_tv: i64 = 0
@@ -2834,7 +2821,7 @@ unsafe fn cce_st_assign(v_self: i64, v_st: i64) -> i64:
     v_tg = cv_getkey(v_st, "target")
     v_tt = cv_getkey(v_tg, "type")
     v_val = cv_getkey(v_st, "value")
-    if cv_classes(v_tt, "TWrapper"):
+    if cc_is_tagged_value(v_tt):
         if (not (cv_equal(cv_getkey(v_st, "op"), cv_text("=")))):
             cc_error(cv_text("Option/Result поддерживает только присваивание '='"), cv_getkey(cv_getkey(v_self, "cur"), "file"), cv_getkey(v_st, "line"))
             return 0
@@ -2846,38 +2833,11 @@ unsafe fn cce_st_assign(v_self: i64, v_st: i64) -> i64:
         if (logic_2):
             cc_error(cv_text("Option/Result присваивание поддерживается только для локальных переменных и параметров"), cv_getkey(cv_getkey(v_self, "cur"), "file"), cv_getkey(v_st, "line"))
             return 0
-        v_src = cce_talloc(v_self)
+        let scratch: i64 = cv_getkey(v_self, "nt")
         cce_expr_value(v_self, v_val, 0)
-        let pieces_3: i64 = cv_list()
-        cv_push(pieces_3, cv_text("mov qword ptr [rbp"))
-        cv_push(pieces_3, cv_format(cce_toff(v_self, v_src), "+d"))
-        cv_push(pieces_3, cv_text("], rax"))
-        cce_e(v_self, cv_join(cv_text(""), pieces_3))
-        v_snap = cce_talloc(v_self)
-        let pieces_4: i64 = cv_list()
-        cv_push(pieces_4, cv_text("lea rdi, [rbp"))
-        cv_push(pieces_4, cv_format(cce_toff(v_self, v_snap), "+d"))
-        cv_push(pieces_4, cv_text("]"))
-        cce_e(v_self, cv_join(cv_text(""), pieces_4))
-        let pieces_5: i64 = cv_list()
-        cv_push(pieces_5, cv_text("mov rsi, qword ptr [rbp"))
-        cv_push(pieces_5, cv_format(cce_toff(v_self, v_src), "+d"))
-        cv_push(pieces_5, cv_text("]"))
-        cce_e(v_self, cv_join(cv_text(""), pieces_5))
-        cce_copy_bytes(v_self, cv_getkey(v_tt, "size"))
-        cce_zero_range(v_self, cce_soff(v_self, v_slot), cv_getkey(v_tt, "size"))
-        let pieces_6: i64 = cv_list()
-        cv_push(pieces_6, cv_text("lea rdi, [rbp"))
-        cv_push(pieces_6, cv_format(cce_soff(v_self, v_slot), "+d"))
-        cv_push(pieces_6, cv_text("]"))
-        cce_e(v_self, cv_join(cv_text(""), pieces_6))
-        let pieces_7: i64 = cv_list()
-        cv_push(pieces_7, cv_text("lea rsi, [rbp"))
-        cv_push(pieces_7, cv_format(cce_toff(v_self, v_snap), "+d"))
-        cv_push(pieces_7, cv_text("]"))
-        cce_e(v_self, cv_join(cv_text(""), pieces_7))
-        cce_copy_bytes(v_self, cv_getkey(v_tt, "size"))
-        cce_trelease(v_self, v_src)
+        # RHS is materialized before writing; copying a slot to itself is safe.
+        cce_copy_from_rax(v_self, cce_soff(v_self, v_slot), cc_type_size(v_tt))
+        cce_trelease(v_self, scratch)
         return 0
     if (cv_classes(v_val, "Call") and (cv_equal(cv_get(v_val, cv_text("kindt"), 0), cv_text("ctor")))):
         v_tmp = cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_val, "temp_slot"))
@@ -3054,6 +3014,8 @@ unsafe fn cce_st_expr(v_self: i64, v_st: i64) -> i64:
         cce_emit_print(v_self, cv_getkey(v_e, "args"), cv_getkey(v_e, "line"))
         return 0
     cce_expr_value(v_self, v_e, 0)
+    let owner: i64 = cv_getkey(v_e, "owner_transfer")
+    if owner != 0: cce_drop_owner(v_self, owner)
     return 0
 
 unsafe fn cce_emit_print(v_self: i64, v_args: i64, v_line: i64) -> i64:
@@ -3218,15 +3180,15 @@ unsafe fn cce_st_return(v_self: i64, v_st: i64) -> i64:
     let v_t: i64 = 0
     v_ret_type = cv_getkey(cv_getkey(v_self, "cur"), "ret_type")
     if (not (cv_getkey(v_st, "value") == 0)):
-        if cv_classes(v_ret_type, "TWrapper") or cv_classes(v_ret_type, "TStruct"):
+        if cce_abi_has_sret(v_ret_type):
             v_size = cc_type_size(v_ret_type)
             v_snapshot = cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(cv_getkey(v_self, "cur"), "ret_snapshot_slot"))
             v_snapshot_off = cce_soff(v_self, v_snapshot)
             if (cv_truth(cc_is_struct(v_ret_type)) and cv_classes(cv_getkey(v_st, "value"), "Call") and (cv_equal(cv_get(cv_getkey(v_st, "value"), cv_text("kindt"), 0), cv_text("ctor")))):
                 cce_emit_ctor(v_self, cv_getkey(v_st, "value"), v_snapshot_off)
             else:
-                if (cv_classes(cv_getkey(v_st, "value"), "Call") and (cv_equal(cv_get(cv_getkey(v_st, "value"), cv_text("kindt"), 0), cv_text("wrapper_ctor")))):
-                    cce_emit_wrapper_ctor(v_self, cv_getkey(v_st, "value"), v_snapshot_off)
+                if cc_is_sum_ctor(cv_getkey(v_st, "value")):
+                    cce_emit_sum_ctor(v_self, cv_getkey(v_st, "value"), v_snapshot_off)
                 else:
                     if cv_truth(cc_is_struct(v_ret_type)):
                         cce_eaddr(v_self, cv_getkey(v_st, "value"))
@@ -3246,6 +3208,7 @@ unsafe fn cce_st_return(v_self: i64, v_st: i64) -> i64:
                         cv_push(pieces_2, cv_text("]"))
                         cce_e(v_self, cv_join(cv_text(""), pieces_2))
                         cce_copy_bytes(v_self, v_size)
+            cce_owner_flag(v_self, cv_getkey(cv_getkey(v_st, "value"), "owner_transfer"), 0)
             cce_emit_cleanup_scopes(v_self, cv_getkey(v_st, "cleanup_scopes"))
             v_sret = cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(cv_getkey(v_self, "cur"), "sret_slot"))
             let pieces_3: i64 = cv_list()
@@ -3260,6 +3223,17 @@ unsafe fn cce_st_return(v_self: i64, v_st: i64) -> i64:
             cce_e(v_self, cv_join(cv_text(""), pieces_4))
             cce_copy_bytes(v_self, v_size)
             cv_field(v_self, "nt", cv_getkey(v_self, "for_floor"))
+        elif cv_classes(v_ret_type, "TSlice"):
+            cce_eaddr(v_self, cv_getkey(v_st, "value"))
+            cce_e(v_self, cv_text("sub rsp, 16"))
+            cce_e(v_self, cv_text("mov rdx, qword ptr [rax+8]"))
+            cce_e(v_self, cv_text("mov rax, qword ptr [rax]"))
+            cce_e(v_self, cv_text("mov qword ptr [rsp], rax"))
+            cce_e(v_self, cv_text("mov qword ptr [rsp+8], rdx"))
+            cce_emit_cleanup_scopes(v_self, cv_getkey(v_st, "cleanup_scopes"))
+            cce_e(v_self, cv_text("mov rax, qword ptr [rsp]"))
+            cce_e(v_self, cv_text("mov rdx, qword ptr [rsp+8]"))
+            cce_e(v_self, cv_text("add rsp, 16"))
         else:
             v_t = cce_expr_value(v_self, cv_getkey(v_st, "value"), 0)
             cce_assign_conv(v_self, v_t, v_ret_type)
@@ -3355,7 +3329,7 @@ unsafe fn cce_emit_fn(v_self: i64, v_fn: i64, v_name_override: i64) -> i64:
             v_s = cv_subscript(cv_getkey(v_fn, "slots"), v_i)
             v_so = cce_soff(v_self, v_s)
             let place: CCEAbiLocation = cce_abi_next(&placement, v_pt)
-            if (cv_classes(v_pt, "TWrapper") or cv_truth(cc_is_struct(v_pt))):
+            if cce_abi_has_sret(v_pt):
                 v_sp = cce_talloc(v_self)
                 cce_abi_in(v_self, v_pt, place, cv_index(cce_toff(v_self, v_sp)))
                 let items_18: i64 = cv_vector(CV_TUPLE)

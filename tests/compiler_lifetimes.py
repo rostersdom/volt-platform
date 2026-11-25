@@ -40,19 +40,24 @@ print(firsts(left, right), values[2], firsts(values[1..3], values[2..4]))
 ''', "30 30 50\n")
 
     def test_slice_rebinding_is_rejected_before_lowering(self):
-        self.assert_rejected('''let values = [1, 2]
+        source = '''let values = [1, 2]
 let outer = values[0..1]
 if true:
     let local = [3, 4]
-    outer = local[0..2]
-''', "присваивание slice запрещено")
+    let view = local[0..2]
+    let alias = view
+'''
+        for assignment in ("outer = local[0..2]", "outer = alias", "alias = view"):
+            with self.subTest(assignment=assignment):
+                self.assert_rejected(source + f"    {assignment}\n", "присваивание slice запрещено")
 
     def test_borrow_ends_after_block_cleanup(self):
         self.assert_runs('''let values = [1, 2]
 for i in 0..2:
     if i == 0:
         let view = values[0..2]
-        defer print(view[0])
+        let alias = view
+        defer print(alias[0])
     values[0] += 10
 print(values[0])
 ''', "1\n21\n")
@@ -61,7 +66,8 @@ print(values[0])
         self.assert_rejected('''let values = [1, 2]
 defer values[0] = 3
 let view = values[0..2]
-print(view[0])
+let alias = view
+defer print(alias[0])
 ''', "нельзя менять массив, пока slice ссылается на него")
 
     def test_outer_defer_writes_after_inner_block_cleanup(self):
@@ -91,7 +97,8 @@ print(values[0])
 let outer = values[0..2]
 if true:
     let inner = values[0..1]
-    print(inner[0])
+    let alias = outer
+    defer print(inner[0], alias[1])
 values[1] = 3
 ''', "нельзя менять массив, пока slice ссылается на него")
 
@@ -100,10 +107,12 @@ values[1] = 3
     x: i64
 let points = [Point(1), Point(2)]
 let view = points[0..2]
+let alias = view
 '''
         for assignment, diagnostic in (
             ("points[0].x += 1", "нельзя менять массив, пока slice ссылается на него"),
             ("view[0].x = 3", "неизменяемый slice нельзя изменять"),
+            ("alias[0].x = 3", "неизменяемый slice нельзя изменять"),
             ("points = points", "нельзя менять массив, пока slice ссылается на него"),
         ):
             with self.subTest(assignment=assignment):
@@ -129,21 +138,78 @@ defer match choice:
         for source in (
             "fn bad(view: []i64) -> []i64:\n    return view\n",
             "fn bad() -> []i64:\n    let data = [1]\n    return data[0..1]\n",
+            "fn bad(view: []i64) -> []i64:\n    let alias = view\n    return alias\n",
         ):
             with self.subTest(source=source):
                 self.assert_rejected(source, "возврат slice пока запрещён")
 
     def test_slices_cannot_be_stored_in_arrays(self):
-        for declaration in ("let views = [values[0..1]]", "let views: [1][]i64"):
+        source = '''let values = [1, 2]
+let view = values[0..1]
+let alias = view
+'''
+        for declaration in ("let views = [values[0..1]]", "let views: [1][]i64", "let views = [alias]"):
             with self.subTest(declaration=declaration):
-                self.assert_rejected("let values = [1, 2]\n" + declaration + "\n",
-                                     "slice нельзя хранить в массиве")
+                self.assert_rejected(source + declaration + "\n", "slice нельзя хранить в массиве")
 
-    def test_slice_copy_has_a_source_diagnostic(self):
-        self.assert_rejected('''fn inspect(view: []i64) -> i64:
-    let copy = view
-    return len(copy)
-''', "копирование slice через let пока не поддерживается")
+    def test_slice_alias_cannot_be_stored_in_struct(self):
+        self.assert_rejected('''struct Holder:
+    view: []i64
+
+let values = [1, 2]
+let view = values[0..2]
+let alias = view
+let holder = Holder(alias)
+''', "slice нельзя хранить в struct")
+
+    def test_slice_alias_copies_address_and_length(self):
+        self.assert_runs('''fn inspect(view: []i64):
+    let alias = view
+    print(len(alias), alias[0], alias[1])
+
+let values = [10, 20, 30, 40]
+let view = values[1..3]
+let alias: []i64 = view
+inspect(alias)
+''', "2 20 30\n")
+
+    def test_slice_alias_preserves_an_empty_range(self):
+        self.assert_runs('''fn size(view: []i64) -> i64:
+    let alias = view
+    return len(alias)
+
+let values = [10, 20]
+let view = values[2..2]
+let alias = view
+print(len(alias), size(alias))
+''', "0 0\n")
+
+    def test_defer_keeps_the_slice_alias_visible_before_shadowing(self):
+        self.assert_runs('''let values = [11, 22]
+let view = values[0..2]
+let alias = view
+if true:
+    defer print(len(alias), alias[0], alias[1])
+    let values = [33, 44]
+    values[1] += 1
+    let view = values[1..2]
+    let alias = view
+    defer print(len(alias), alias[0])
+print(alias[1])
+''', "1 45\n2 11 22\n22\n")
+
+    def test_defer_cannot_use_a_slice_alias_declared_after_it(self):
+        self.assert_rejected('''let values = [1, 2]
+let view = values[0..2]
+defer print(len(alias))
+let alias = view
+''', "объявленную после defer")
+
+    def test_slice_alias_requires_a_name(self):
+        self.assert_rejected('''fn inspect(view: []i64):
+    let alias = view as []i64
+    print(len(alias))
+''', "инициализатор slice: нужен диапазон локального массива или имя неизменяемого slice")
 
     def test_address_from_a_slice_requires_explicit_unsafe(self):
         self.assert_rejected('''fn inspect(view: []i64) -> i64:
