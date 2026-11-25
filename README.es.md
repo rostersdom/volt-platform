@@ -484,8 +484,11 @@ Es una convención interna de VOLT, no un ABI de C.
   bloque. Mientras haya lectores, ninguna copia del descriptor puede editar
   ni liberar el búfer. El propietario se libera explícitamente; los elementos
   se copian de forma superficial.
-- **Propietario único:** [`OwnedBuffer`](docs/owned-buffer.md) se mueve con
-  `let`, al llamar o al retornar; los propietarios vivos se liberan después de `defer`.
+- **Propietario único:** [`OwnedBuffer`](docs/owned-buffer.md) y
+  [`fs.OwnedFd`](docs/owned-fd.md) se mueven con `let`, al llamar o al
+  retornar; los propietarios vivos se liberan después de `defer` exactamente
+  una vez: el búfer libera su memoria y el descriptor se cierra sin un doble
+  `close` de un número reutilizado.
 
 ```volt
 fn sum(values: []i64) -> i64:
@@ -553,7 +556,8 @@ Solo se admite Linux x86-64 con el subconjunto de ABI descrito. Comprobar
 índices y aritmética no hace seguros los punteros sin procesar ni el FFI.
 `unsafe` asigna responsabilidades al llamador: no es una zona aislada. La
 comprobación de préstamos de vistas es léxica y la destrucción automática se
-limita a `OwnedBuffer`, incluso dentro de un `Result`. `Buffer<T>` aún se libera
+limita a los tipos propietarios registrados, `OwnedBuffer` y `fs.OwnedFd`,
+incluso dentro de un `Result`. `Buffer<T>` y `fs.Descriptor` aún se liberan
 manualmente. No se implementan
 traits, genéricos con parámetros constantes, clausuras, tuplas, macros,
 `async`/`await`, bloques arbitrarios de ensamblador en línea ni un recolector de

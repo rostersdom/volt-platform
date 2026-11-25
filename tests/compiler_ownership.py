@@ -292,5 +292,159 @@ let item = owned_buffer_new("a")
                 self.assertIn(expected, result.stderr)
 
 
+class OwnedFdOwnership(unittest.TestCase):
+    """Same single-ownership rules, but for fs.OwnedFd over close(2)."""
+    FCNTL = '''unsafe native fn fcntl_getfd(fd: i64) -> i64:
+{
+    mov eax, 72
+    mov esi, 1
+    syscall
+}
+
+fn is_open(fd: i64) -> i64:
+    let status: i64
+    unsafe: status = fcntl_getfd(fd)
+    if status < 0: return 0
+    return 1
+
+'''
+
+    @classmethod
+    def setUpClass(cls):
+        directory = tempfile.TemporaryDirectory(prefix="volt-owned-fd-")
+        cls.addClassCleanup(directory.cleanup)
+        cls.tmp = Path(directory.name)
+        cls.volt = cls.tmp / "volt"
+        shutil.copy2(VOLT, cls.volt)
+        shutil.copytree(ROOT / "vstd", cls.tmp / "vstd")
+        # Count every automatic close, including a duplicate close of a reused
+        # descriptor that the kernel alone would hide behind EBADF.
+        fs = cls.tmp / "vstd/fs.volt"
+        text = fs.read_text(encoding="utf-8")
+        drop = "fn __volt_owned_fd_close(handle: ptr<OwnedFd>):\n"
+        if text.count(drop) != 1:
+            raise AssertionError("missing vstd fd drop hook")
+        fs.write_text(text.replace(drop, drop + '    print("close", owned_fd_number(handle))\n'), encoding="utf-8")
+
+    def build(self, source):
+        path = self.tmp / "main.volt"
+        path.write_text("use fs\n" + source, encoding="utf-8")
+        return subprocess.run([self.volt, path, "-o", self.tmp / "program"],
+                              capture_output=True, text=True, timeout=15)
+
+    def check_run(self, source, stdout, code=0, stderr=""):
+        built = self.build(source)
+        self.assertEqual(built.returncode, 0, built.stderr + built.stdout)
+        ran = subprocess.run([self.tmp / "program"], cwd=self.tmp, capture_output=True, text=True, timeout=5)
+        self.assertEqual((ran.returncode, ran.stdout, ran.stderr), (code, stdout, stderr))
+
+    def test_fd_moves_through_let_argument_return_and_propagation(self):
+        self.check_run(self.FCNTL + '''fn pass(input: fs.OwnedFd) -> fs.OwnedFd:
+    return input
+
+fn consume(input: fs.OwnedFd):
+    defer print("read", fs.owned_fd_number(&input))
+
+fn checked(path: string) -> Result<fs.OwnedFd, fs.IoError>:
+    let handle = fs.open_owned(path)?
+    return Ok(handle)
+
+match checked("main.volt"):
+    Ok(handle):
+        print("open", fs.owned_fd_number(&handle))
+        let moved = pass(handle)
+        consume(moved)
+        print("after", is_open(3))
+    Err(error): panic("open failed")
+''', "open 3\nread 3\nclose 3\nafter 0\n")
+
+    def test_fd_closes_once_after_defer_on_propagation(self):
+        self.check_run(self.FCNTL + '''fn probe(path: string) -> Result<i64, fs.IoError>:
+    let handle = fs.open_owned(path)?
+    let raw = fs.owned_fd_number(&handle)
+    defer print("defer", is_open(raw))
+    let info = fs.stat("missing-file")?
+    return Ok(raw)
+
+match probe("main.volt"):
+    Ok(raw): panic("expected error")
+    Err(error): print("err", fs.errno(error))
+''', "defer 1\nclose 3\nerr 2\n")
+
+    def test_fd_reused_after_drop_is_not_closed_twice(self):
+        # The dropped descriptor number is immediately reused by the next open;
+        # any stale second close would show up as an extra "close" line and
+        # would kill the reused descriptor.
+        self.check_run(self.FCNTL + '''fn take(path: string) -> Result<i64, fs.IoError>:
+    let handle = fs.open_owned(path)?
+    return Ok(fs.owned_fd_number(&handle))
+
+match take("main.volt"):
+    Ok(raw):
+        print("closed", is_open(raw))
+        match fs.open_owned("main.volt"):
+            Ok(again):
+                let reused = fs.owned_fd_number(&again)
+                print("reused", reused, is_open(reused))
+            Err(error): panic("reopen failed")
+        print("final", is_open(raw))
+    Err(error): panic("open failed")
+''', "close 3\nclosed 0\nreused 3 1\nclose 3\nfinal 0\n")
+
+    def test_fd_result_wildcard_drops_after_arm_defer(self):
+        self.check_run('''match fs.open_owned("main.volt"):
+    _: defer print("wildcard")
+''', "wildcard\nclose 3\n")
+
+    def test_fd_rejects_moves_copies_and_unsupported_storage(self):
+        header = '''fn consume(input: fs.OwnedFd):
+    return
+
+fn open_it() -> Result<fs.OwnedFd, fs.IoError>:
+    return fs.open_owned("main.volt")
+
+'''
+        arm = '''match open_it():
+    Ok(item):
+'''
+        for source, expected in (
+            ("        let moved = item\n        consume(item)", "после переноса"),
+            ("        consume(item)\n        consume(item)", "после переноса"),
+            ("        if true: consume(item)\n        print(fs.owned_fd_number(&item))", "после переноса"),
+            ("        for i in 0..3:\n            consume(item)\n            continue", "следующей итерации"),
+            ("        defer print(fs.owned_fd_number(&item))\n        consume(item)", "пока он заимствован"),
+            ("        defer consume(item)", "defer не может переносить"),
+            ("        let copy = &item", "адрес OwnedFd"),
+            ("        let bag = [item]", "нельзя хранить в массиве"),
+            ("        let wrapped = Some(item)", "недопустимый тип payload"),
+            ("        let moved = item\n        moved = moved", "нельзя копировать"),
+        ):
+            with self.subTest(source=source):
+                built = self.build(header + arm + source + "\n    Err(error): panic(\"open failed\")\n")
+                self.assertEqual(built.returncode, 1, built.stdout + built.stderr)
+                self.assertIn(expected, built.stderr)
+        for source, expected in (
+            ("let result = open_it()\nlet next = result\nmatch result:\n    _: print(1)", "после переноса"),
+            ("fn bad() -> Result<i64, fs.IoError>:\n"
+             "    let result = open_it()\n"
+             "    let handle = result?\n"
+             "    let again = result\n"
+             "    return Ok(0)", "после переноса"),
+            ("let wrapped: Option<fs.OwnedFd> = None", "недопустимый тип payload"),
+            ("let wrong: Result<i64, fs.OwnedFd> = Ok(1)", "недопустимый тип payload"),
+            ("struct Bag:\n    owner: fs.OwnedFd", "нельзя хранить в struct"),
+            ("extern fn external() -> Result<fs.OwnedFd, fs.IoError>", "запрещены в extern/native"),
+            ("fn bad(handle: ptr<fs.OwnedFd>):\n    return", "указатель на OwnedFd"),
+            ("let missing = fs.open_owned(\"missing-file\")\n"
+             "let next = missing\n"
+             "match missing:\n"
+             "    _: print(1)", "после переноса"),
+        ):
+            with self.subTest(source=source):
+                built = self.build(header + source + "\n")
+                self.assertEqual(built.returncode, 1, built.stdout + built.stderr)
+                self.assertIn(expected, built.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

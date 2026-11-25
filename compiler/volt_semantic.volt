@@ -35,6 +35,8 @@ unsafe fn ccs_new(v_progs: i64, v_entry_name: i64) -> i64:
     cv_field(v_self, "frozen_mut_slots", cv_vector(CV_SET))
     cv_field(v_self, "buffer_borrow_file", cc_path_join(cc_std, cv_text("borrow_buffer.volt")))
     cv_field(v_self, "owned_buffer_file", cc_path_join(cc_std, cv_text("owned_buffer.volt")))
+    cv_field(v_self, "fs_file", cc_path_join(cc_std, cv_text("fs.volt")))
+    cv_field(v_self, "owned_kinds", cc_owner_kinds(v_self))
     cv_field(v_self, "lbl_prefix", cv_text("VOLT_L"))
     return v_self
 
@@ -145,7 +147,7 @@ unsafe fn ccs_resolve_type(v_self: i64, v_t: i64, v_indirect: i64) -> i64:
         # The module must not compile with a compiler that lacks its lifetime checks.
         if cv_name(v_n, "__VoltBorrowScopeV2") and cv_equal(v_file, cv_getkey(v_self, "buffer_borrow_file")):
             return cc_int(CV_TRUE, cv_i(8))
-        if cv_name(v_n, "__VoltOwnedBufferV1") and cv_equal(v_file, cv_getkey(v_self, "owned_buffer_file")):
+        if cc_owner_guard(v_self, v_n, v_file):
             return cc_int(CV_TRUE, cv_i(8))
         if (cv_contains(cv_getkey(v_self, "type_vars"), v_n)):
             v_typ = cv_subscript(cv_getkey(v_self, "type_vars"), v_n)
@@ -219,8 +221,8 @@ unsafe fn ccs_resolve_type(v_self: i64, v_t: i64, v_indirect: i64) -> i64:
         return ccs_wrapper_type(v_self, v_name, v_args, v_file, cv_getkey(v_t, "line"), v_indirect)
     if (cv_equal(cv_getkey(v_t, "kind"), cv_text("ptr"))):
         v_elem = ccs_resolve_type(v_self, cv_subscript(cv_getkey(v_t, "a"), 3), CV_TRUE)
-        if cc_is_owned(v_elem) and not cv_equal(v_file, cv_getkey(v_self, "owned_buffer_file")):
-            cc_error(cv_text("указатель на OwnedBuffer нельзя объявить или привести к нему"), v_file, cv_getkey(v_t, "line"))
+        if cc_is_owned(v_elem) and not cv_equal(v_file, cc_owned_home(v_elem)):
+            cc_error(cv_cat(cv_text("указатель на "), cv_cat(cc_owner_title(v_elem), cv_text(" нельзя объявить или привести к нему"))), v_file, cv_getkey(v_t, "line"))
         if cc_is_mut_slice(v_elem):
             cc_error(cv_text("ptr не может ссылаться на дескриптор изменяемого slice"), v_file, cv_getkey(v_t, "line"))
             return 0
@@ -273,7 +275,7 @@ unsafe fn cc_allowed_payload(typ: i64) -> bool:
     return cv_truth(cc_isscalar(typ)) or cv_classes(typ, "TStruct") or cc_is_tagged_value(typ)
 
 unsafe fn ccs_wrapper_type(v_self: i64, name: i64, args: i64, file: i64, line: i64, indirect: i64) -> i64:
-    let owned_ok: bool = cv_name(name, "Result") and cc_is_owned_buffer(cv_at(args, 0))
+    let owned_ok: bool = cv_name(name, "Result") and cc_is_owned_struct(cv_at(args, 0))
     for i in 0..cv_len(args):
         let payload: i64 = cv_at(args, i)
         if owned_ok and i == 0: continue
@@ -417,10 +419,11 @@ unsafe fn ccs_struct_type(v_self: i64, v_name: i64, v_args: i64, v_file: i64, v_
     v_typ = cv_get(cv_getkey(v_self, "types_structs"), v_key, 0)
     if (v_typ == 0):
         v_typ = cc_TStruct(v_name, v_args)
-        if cv_name(v_name, "OwnedBuffer") and cv_equal(cv_getkey(v_sd, "file"), cv_getkey(v_self, "owned_buffer_file")):
-            cv_field(v_typ, "owned_buffer", CV_TRUE)
+        let v_kind: i64 = cc_owner_kind_of_def(v_self, v_sd)
+        if v_kind != 0:
+            cv_field(v_typ, "owner_kind", v_kind)
             cv_field(v_typ, "opaque_file", cv_getkey(v_sd, "file"))
-            cv_field(v_self, "has_owned_buffer", CV_TRUE)
+            cv_field(v_self, "has_owned", CV_TRUE)
         if cv_truth(cv_getkey(v_sd, "opaque")):
             cv_field(v_typ, "opaque_file", cv_getkey(v_sd, "file"))
             cv_field(v_typ, "source_name", cv_getkey(v_sd, "source_name"))
@@ -2582,8 +2585,10 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
     else:
         v_name = ccs_module_name(v_self, cv_getkey(v_e, "name"), file, line)
     cv_field(v_e, "name", v_name)
-    if cv_name(v_name, "__volt_owned_buffer_drop") and cv_truth(cv_getkey(v_self, "has_owned_buffer")):
-        cc_error(cv_text("drop OwnedBuffer выполняется автоматически"), file, line)
+    if cv_truth(cv_getkey(v_self, "has_owned")):
+        let v_drop_kind: i64 = cc_owner_kind_of_drop(v_self, v_name)
+        if v_drop_kind != 0:
+            cc_error(cv_cat(cv_text("drop "), cv_cat(cv_getkey(v_drop_kind, "title"), cv_text(" выполняется автоматически"))), file, line)
     if cv_truth(ccs_is_callback_builtin(v_self, v_name)):
         ccs_require_unsafe(v_self, v_e, cv_text("callback"))
         if ((not (cv_equal(cv_length(cv_getkey(v_e, "args")), 11))) or not (cv_classes(cv_subscript(cv_getkey(v_e, "args"), 3), "VarRef"))):
@@ -2705,7 +2710,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
         return v_hint
     if (cv_contains(cv_getkey(v_self, "struct_defs"), v_name)):
         v_definition = cv_subscript(cv_getkey(v_self, "struct_defs"), v_name)
-        if cv_name(v_name, "OwnedBuffer") and cv_truth(cv_getkey(v_self, "has_owned_buffer")) and not cv_equal(file, cv_getkey(v_self, "owned_buffer_file")):
+        if cv_name(v_name, "OwnedBuffer") and cv_truth(cv_getkey(v_self, "has_owned")) and not cv_equal(file, cv_getkey(v_self, "owned_buffer_file")):
             cc_error(cv_text("приватный конструктор OwnedBuffer"), file, line)
         if cv_truth(cv_getkey(v_definition, "opaque")) and not cv_equal(cv_getkey(v_definition, "file"), file):
             cc_error(cv_text("приватный конструктор struct"), file, line)

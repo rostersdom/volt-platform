@@ -61,6 +61,9 @@
       возможного переноса, автоматический `drop` после `defer`.
 - [x] [`Result<OwnedBuffer, E>`](docs/owned-buffer.md): перенос в `Ok`, извлечение
       через `match` и `?`, освобождение живого `Ok` после `defer`.
+- [x] [`fs.OwnedFd`](docs/owned-fd.md): реестр владеющих типов вместо жёсткой
+      привязки к `OwnedBuffer`, `fs.open_owned`, автоматический `close(2)`
+      ровно один раз после `defer`, `Result<fs.OwnedFd, E>` по той же схеме.
 - [x] [`TextView`](docs/text-view.md): сохранённая длина, доступ к байту и
       поддиапазон за O(1); явный переход к C-строке.
 - [x] [`T: Eq`](docs/language.md#ограничение-t-eq): проверка при вызове,

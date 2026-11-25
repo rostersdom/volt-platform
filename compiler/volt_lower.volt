@@ -2449,21 +2449,33 @@ unsafe fn cce_owner_flag(emitter: i64, slot: i64, live: i64):
     let off: i64 = cce_owner_flag_addr(emitter, slot)
     if off != 0: cce_e(emitter, cv_mod(cv_text("mov qword ptr [rbp%+d], %d"), cv_pair(off, cv_i(live))))
 
+# Метка функции drop владеющего типа из реестра (см. cc_owner_kinds).
+unsafe fn cce_owner_drop_label(emitter: i64, typ: i64) -> i64:
+    let payload: i64 = typ
+    if cc_is_owned_result(typ): payload = cv_at(cv_getkey(typ, "args"), 0)
+    let kind: i64 = cv_getkey(payload, "owner_kind")
+    let name: i64 = cv_getkey(kind, "drop")
+    let file: i64 = cv_getkey(kind, "file")
+    let prog: i64 = cv_get(cv_getkey(cv_getkey(emitter, "sem"), "module_files"), file, 0)
+    if prog != 0 and cv_getkey(prog, "symbol_prefix") != 0:
+        name = cv_cat(cv_getkey(prog, "symbol_prefix"), name)
+    return cc_function_label(name, file)
+
 unsafe fn cce_drop_owner(emitter: i64, slot: i64):
     let off: i64 = cce_owner_flag_addr(emitter, slot)
     let skip: i64 = cce_lbl(emitter)
-    let file: i64 = cv_getkey(cv_getkey(emitter, "sem"), "owned_buffer_file")
+    let typ: i64 = cv_getkey(slot, "typ")
+    let drop_label: i64 = cce_owner_drop_label(emitter, typ)
     cce_e(emitter, cv_mod(cv_text("cmp qword ptr [rbp%+d], 0"), off))
     cce_e(emitter, cv_cat(cv_text("je "), skip))
     cce_owner_flag(emitter, slot, 0)
     let storage: i64 = cce_soff(emitter, slot)
-    let typ: i64 = cv_getkey(slot, "typ")
     if cc_is_owned_result(typ):
         cce_e(emitter, cv_mod(cv_text("cmp qword ptr [rbp%+d], 0"), storage))
         cce_e(emitter, cv_cat(cv_text("jne "), skip))
         storage = cv_add(storage, cv_getkey(typ, "payload_off"))
     cce_e(emitter, cv_mod(cv_text("lea rdi, [rbp%+d]"), storage))
-    cce_e(emitter, cv_cat(cv_text("call "), cc_function_label(cv_text("__volt_owned_buffer_drop"), file)))
+    cce_e(emitter, cv_cat(cv_text("call "), drop_label))
     cce_label(emitter, skip, 0)
 
 unsafe fn cce_drop_owners(emitter: i64, owners: i64):

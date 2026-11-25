@@ -480,8 +480,11 @@ stable C type layout or call contract.
   has checked owner handles and read-only views that end with their block.
   Mutations and release through any owner alias are rejected while a reader is
   active. The owner still requires explicit release; element copies are shallow.
-- **Single ownership:** [`OwnedBuffer`](docs/owned-buffer.md) moves through
-  `let`, calls and returns. Live owners drop once after their block's `defer`.
+- **Single ownership:** [`OwnedBuffer`](docs/owned-buffer.md) and
+  [`fs.OwnedFd`](docs/owned-fd.md) move through `let`, calls and returns. Live
+  owners drop once after their block's `defer`: the buffer frees its storage
+  and the descriptor is closed exactly once, with no double close of a reused
+  descriptor number.
 
 ```volt
 fn sum(values: []i64) -> i64:
@@ -549,8 +552,9 @@ compile-time search paths. It does not download packages or run build scripts.
 Linux x86-64 and the documented ABI subset are the only supported target.
 Runtime checks on indexing and arithmetic do not make raw pointers and FFI
 memory-safe. `unsafe` is a caller obligation, not a sandbox. Slice borrow checks
-are lexical, and automatic destruction is limited to `OwnedBuffer`, including
-when held in a `Result`. Ordinary `Buffer<T>` still requires manual release.
+are lexical, and automatic destruction is limited to the registered owning
+types `OwnedBuffer` and `fs.OwnedFd`, including
+when held in a `Result`. Ordinary `Buffer<T>` and `fs.Descriptor` still require manual release.
 Traits, const generics, closures,
 tuple types, macros, `async`/`await`, arbitrary inline assembly blocks, and a
 garbage collector are not implemented. JavaScript promises and GPU dispatch
