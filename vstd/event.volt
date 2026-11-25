@@ -163,17 +163,32 @@ fn __volt_event_io_status(status: i64) -> Result<i64, i32>:
 # EOF); a POLLHUP can arrive while there are still bytes to read. On
 # Err(EVENT_EAGAIN), wait for POLLIN with poll. Short counts and other positive
 # errnos (including EINTR) are returned as-is. Not for pipes/timerfds/files.
-unsafe fn try_read(fd: i64, buffer: ptr<u8>, length: i64) -> Result<i64, i32>:
+unsafe fn try_read_raw(fd: i64, buffer: ptr<u8>, length: i64) -> Result<i64, i32>:
     if fd < 0 or fd > 2147483647: return Err(9 as i32)
     if length <= 0 or buffer == (0 as ptr<u8>): return Err(22 as i32)
     return __volt_event_io_status(__volt_event_recv(fd, buffer, length))
 
-# Like try_read, with a readable source buffer and POLLOUT for retry. A closed
+# Like try_read_raw, with a readable source buffer and POLLOUT for retry. A closed
 # peer can return EPIPE, but this call does not raise SIGPIPE or change signal handling.
-unsafe fn try_write(fd: i64, buffer: ptr<u8>, length: i64) -> Result<i64, i32>:
+unsafe fn try_write_raw(fd: i64, buffer: ptr<u8>, length: i64) -> Result<i64, i32>:
     if fd < 0 or fd > 2147483647: return Err(9 as i32)
     if length <= 0 or buffer == (0 as ptr<u8>): return Err(22 as i32)
     return __volt_event_io_status(__volt_event_send(fd, buffer, length))
+
+# Safe slice form of try_read_raw: the kernel writes only within the borrowed
+# range and the length comes from the slice. An empty slice is rejected with
+# Err(EINVAL), so Ok(0) always means end of stream and never an empty buffer.
+fn try_read(fd: i64, buffer: []mut u8) -> Result<i64, i32>:
+    if len(buffer) == 0: return Err(22 as i32)
+    unsafe:
+        return try_read_raw(fd, &buffer[0], len(buffer))
+
+# Safe slice form of try_write_raw: the length comes from the slice. An empty
+# slice is rejected with Err(EINVAL) instead of reporting a zero-byte write.
+fn try_write(fd: i64, buffer: []u8) -> Result<i64, i32>:
+    if len(buffer) == 0: return Err(22 as i32)
+    unsafe:
+        return try_write_raw(fd, &buffer[0], len(buffer))
 
 # Release an owned fd. Do not retry close on Linux even after EINTR: the
 # descriptor number may already have been reused.

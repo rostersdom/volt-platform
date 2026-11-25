@@ -80,6 +80,18 @@ unsafe: poll(entries[0..1], 0)
         self.assertIn("poll: аргумент 'fds'", result.stderr)
         self.assertIn("[]mut EventPollFd", result.stderr)
 
+    def test_try_read_rejects_read_only_slice_even_in_unsafe(self):
+        source = self.build / "try_read_read_only.volt"
+        source.write_text("""use event
+let data: [4]u8
+unsafe: try_read(0, data[0..1])
+""", encoding="utf-8")
+        result = subprocess.run([VOLT, source, "-o", self.build / source.stem],
+                                cwd=self.build, env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("try_read: аргумент 'buffer'", result.stderr)
+        self.assertIn("[]mut u8", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
