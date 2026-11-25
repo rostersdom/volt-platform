@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise fs.read_all: bounded whole-file reads into a move-only OwnedBuffer."""
+"""Exercise fs.read_all, fs.read_into and owned_buffer_try_new."""
 import errno
 import os
 from pathlib import Path
@@ -7,6 +7,7 @@ import platform
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,7 @@ class VstdFs(unittest.TestCase):
             (cwd / "empty.bin").write_bytes(b"")
             (cwd / "exact.bin").write_bytes(EXACT)
             (cwd / "adir").mkdir()
+            os.mkfifo(cwd / "pipe")  # no writer: open must not block
 
             expected = "\n".join([
                 f"ok {len(PAYLOAD)} {sum(PAYLOAD)}",
@@ -62,6 +64,8 @@ class VstdFs(unittest.TestCase):
                 f"err {errno.EINVAL}",
                 f"err {errno.EINVAL}",
                 f"err {errno.EISDIR}",
+                # run_fixture's timeout turns a blocked open into a failure.
+                f"err {errno.ESPIPE}",
                 "done",
             ])
             self.run_fixture("vstd_fs_read_all", cwd, expected)
@@ -70,7 +74,40 @@ class VstdFs(unittest.TestCase):
             self.assertEqual((cwd / "payload.bin").read_bytes(), PAYLOAD)
             self.assertEqual((cwd / "exact.bin").read_bytes(), EXACT)
             self.assertEqual({p.name for p in cwd.iterdir()},
-                             {"payload.bin", "empty.bin", "exact.bin", "adir"})
+                             {"payload.bin", "empty.bin", "exact.bin", "adir", "pipe"})
+
+    def test_read_all_fifo_never_blocks_even_without_a_writer(self):
+        with tempfile.TemporaryDirectory(dir=self.build, prefix="read-all-fifo-") as tmp:
+            cwd = Path(tmp)
+            os.mkfifo(cwd / "pipe")
+            started = time.monotonic()
+            self.run_fixture("vstd_fs_fifo", cwd, f"err {errno.ESPIPE}")
+            self.assertLess(time.monotonic() - started, 4, "read_all blocked on a FIFO")
+
+    def test_read_into_reads_binary_through_owned_fd(self):
+        with tempfile.TemporaryDirectory(dir=self.build, prefix="read-into-") as tmp:
+            cwd = Path(tmp)
+            (cwd / "payload.bin").write_bytes(PAYLOAD)
+            (cwd / "adir").mkdir()
+            expected = "\n".join([
+                f"first {len(PAYLOAD)} {sum(PAYLOAD)}",
+                "eof 0",
+                f"empty {errno.EINVAL}",
+                f"dir {errno.EISDIR}",
+                "done",
+            ])
+            self.run_fixture("vstd_fs_read_into", cwd, expected)
+
+    def test_try_new_reports_enomem_without_panicking(self):
+        with tempfile.TemporaryDirectory(dir=self.build, prefix="try-new-") as tmp:
+            expected = "\n".join([
+                "small ok 3",
+                "new 2",
+                "rlimit 0",
+                f"huge err {errno.ENOMEM}",
+                "done",
+            ])
+            self.run_fixture("vstd_fs_try_new", Path(tmp), expected)
 
 
 if __name__ == "__main__":

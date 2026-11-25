@@ -21,10 +21,11 @@ fn report(path: string, limit: i64):
 
 report("payload.bin", 1024)   # binary bytes, read through `?`
 report("missing.bin", 1024)   # ENOENT from open
-report("payload.bin", 4)      # EFBIG: stat sees 7 > 4 before any read
+report("payload.bin", 4)      # EFBIG: fstat sees 7 > 4 before any read
 report("empty.bin", 16)       # empty file is valid
 report("exact.bin", 6)        # exactly max_bytes is valid
 report("exact.bin", 0)        # EINVAL: non-positive limit
 report("exact.bin", -5)       # EINVAL: negative limit
-report("adir", 1024)          # EISDIR on read: mid-read error, closed and freed
+report("adir", 1024)          # EISDIR from fstat on the open descriptor
+report("pipe", 1024)          # ESPIPE: O_NONBLOCK open, fstat rejects the FIFO
 print("done")

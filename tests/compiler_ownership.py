@@ -437,13 +437,21 @@ fn is_open(fd: i64) -> i64:
         shutil.copy2(VOLT, cls.volt)
         shutil.copytree(ROOT / "vstd", cls.tmp / "vstd")
         # Count every automatic close, including a duplicate close of a reused
-        # descriptor that the kernel alone would hide behind EBADF.
+        # descriptor that the kernel alone would hide behind EBADF. A handle
+        # consumed by close_owned carries fd = -1: the drop skips it and no
+        # "close" line may appear for it.
         fs = cls.tmp / "vstd/fs.volt"
         text = fs.read_text(encoding="utf-8")
-        drop = "fn __volt_owned_fd_close(handle: ptr<OwnedFd>):\n"
+        drop = ("fn __volt_owned_fd_close(handle: ptr<OwnedFd>):\n"
+                "    unsafe:\n"
+                "        if handle.fd >= 0: close(handle.fd)\n")
         if text.count(drop) != 1:
             raise AssertionError("missing vstd fd drop hook")
-        fs.write_text(text.replace(drop, drop + '    print("close", owned_fd_number(handle))\n'), encoding="utf-8")
+        fs.write_text(text.replace(drop, drop.replace(
+            "        if handle.fd >= 0: close(handle.fd)\n",
+            "        if handle.fd >= 0:\n"
+            '            print("close", owned_fd_number(handle))\n'
+            "            close(handle.fd)\n")), encoding="utf-8")
 
     def build(self, source):
         path = self.tmp / "main.volt"
@@ -537,6 +545,58 @@ print("end", is_open(3))
         self.check_run('''match fs.open_owned("main.volt"):
     _: defer print("wildcard")
 ''', "wildcard\nclose 3\n")
+
+    def test_close_owned_closes_once_and_drop_stays_silent(self):
+        # The explicit close happens inside close_owned; the automatic drop of
+        # the consumed owner must not print another "close" line, and the
+        # descriptor must be closed exactly once (is_open proves the close).
+        self.check_run(self.FCNTL + '''match fs.open_owned("main.volt"):
+    Ok(handle):
+        match fs.close_owned(handle):
+            Ok(status): print("closed", status)
+            Err(error): panic("close failed")
+        print("after", is_open(3))
+    Err(error): panic("open failed")
+''', "closed 0\nafter 0\n")
+
+    def test_close_owned_does_not_close_a_reused_descriptor(self):
+        # After close_owned the number is immediately reused by the next open;
+        # a stale second close from the drop would show up as an extra "close"
+        # line and would kill the reused descriptor.
+        self.check_run(self.FCNTL + '''match fs.open_owned("main.volt"):
+    Ok(handle):
+        match fs.close_owned(handle):
+            Ok(status): print("closed", status)
+            Err(error): panic("close failed")
+        match fs.open_owned("main.volt"):
+            Ok(again):
+                let reused = fs.owned_fd_number(&again)
+                print("reused", reused, is_open(reused))
+            Err(error): panic("reopen failed")
+        print("final", is_open(3))
+    Err(error): panic("open failed")
+''', "closed 0\nreused 3 1\nclose 3\nfinal 0\n")
+
+    def test_close_owned_consumes_the_old_name(self):
+        header = '''match fs.open_owned("main.volt"):
+    Ok(handle):
+'''
+        for source, expected in (
+            ("        fs.close_owned(handle)\n        print(fs.owned_fd_number(&handle))", "после переноса"),
+            ("        fs.close_owned(handle)\n        fs.close_owned(handle)", "после переноса"),
+            ("        let again = fs.close_owned(handle)\n        print(fs.owned_fd_number(&handle))", "после переноса"),
+        ):
+            with self.subTest(source=source):
+                built = self.build(header + source + "\n    Err(error): panic(\"open failed\")\n")
+                self.assertEqual(built.returncode, 1, built.stdout + built.stderr)
+                self.assertIn(expected, built.stderr)
+        # A deferred read borrows the owner, so close_owned cannot take it.
+        built = self.build(header +
+                           "        defer print(fs.owned_fd_number(&handle))\n"
+                           "        fs.close_owned(handle)\n"
+                           "    Err(error): panic(\"open failed\")\n")
+        self.assertEqual(built.returncode, 1, built.stdout + built.stderr)
+        self.assertIn("пока он заимствован", built.stderr)
 
     def test_fd_rejects_moves_copies_and_unsupported_storage(self):
         header = '''fn consume(input: fs.OwnedFd):

@@ -6,7 +6,9 @@
 const AT_FDCWD: i64 = -100
 const FS_AT_REMOVEDIR: i64 = 0x200
 const FS_RENAME_NOREPLACE: i64 = 1
+const STATX_TYPE: i64 = 0x1
 const STATX_SIZE: i64 = 0x200
+const FS_AT_EMPTY_PATH: i64 = 0x1000
 const ERR_NOT_SUPPORTED: i32 = 95
 
 unsafe native fn __volt_fs_statx(dirfd: i64, path: ptr<char>, flags: i64, mask: i64, metadata: ptr<u64>) -> i64:
@@ -51,6 +53,14 @@ unsafe native fn __volt_fs_unlinkat(dirfd: i64, path: ptr<char>, flags: i64) -> 
 fn __volt_fs_path_status(status: i64) -> Result<i64, i32>:
     if status < 0: return Err((0 - status) as i32)
     return Ok(status)
+
+# Query an already open descriptor by handle (statx with AT_EMPTY_PATH), not
+# by path: there is no stat→open race. metadata receives stx_mask (word 0),
+# stx_mode (u16 at byte offset 28) and stx_size (word 5).
+unsafe fn fd_stat(fd: i64, metadata: ptr<u64>) -> Result<i64, i32>:
+    let status: i64 = __volt_fs_statx(fd, "" as ptr<char>, FS_AT_EMPTY_PATH, STATX_TYPE | STATX_SIZE, metadata)
+    return __volt_fs_path_status(status)
+
 
 # Create one directory. Only rwx permission bits (0o000..0o777) are accepted;
 # the process umask or parent default ACL applies. Existing entries are errors.

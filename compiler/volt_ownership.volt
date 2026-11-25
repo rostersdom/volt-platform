@@ -21,6 +21,8 @@ unsafe fn cc_owner_kinds(sem: i64) -> i64:
     cv_push(buffer_readers, cv_text("owned_buffer_bytes"))
     let fd_readers: i64 = cv_list()
     cv_push(fd_readers, cv_text("owned_fd_number"))
+    cv_push(fd_readers, cv_text("read_into"))
+    cv_push(fd_readers, cv_text("__volt_owned_fd_take"))
     let kinds: i64 = cv_list()
     cv_push(kinds, cc_OwnerKind("OwnedBuffer", "OwnedBuffer", cv_getkey(sem, "owned_buffer_file"), "__volt_owned_buffer_drop", "__VoltOwnedBufferV1", buffer_readers))
     cv_push(kinds, cc_OwnerKind("OwnedFd", "OwnedFd", cv_getkey(sem, "fs_file"), "__volt_owned_fd_close", "__VoltOwnedFdV1", fd_readers))
