@@ -41,7 +41,7 @@ CORE_SUITES = (
     # Pure compiler suites: build and run generated ELF binaries only.
     "compiler_bootstrap", "compiler_fnptr", "compiler_lifetimes",
     "compiler_buffer_borrow", "compiler_manifest", "compiler_sum_types",
-    "compiler_modules", "compiler_ownership", "compiler_slice_borrows",
+    "compiler_modules", "compiler_ownership", "compiler_ownership_model", "compiler_slice_borrows",
     "compiler_eq_constraint", "compiler_c_struct", "compiler_debug",
     "compiler_fuzz",
     # Golden compile-and-run tests; no native deps.
