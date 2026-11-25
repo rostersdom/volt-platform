@@ -67,6 +67,11 @@
 - [x] [`fs.OwnedFd`](docs/owned-fd.md): реестр владеющих типов вместо жёсткой
       привязки к `OwnedBuffer`, `fs.open_owned`, автоматический `close(2)`
       ровно один раз после `defer`, `Result<fs.OwnedFd, E>` по той же схеме.
+- [x] [`Option<OwnedBuffer>` и `Option<fs.OwnedFd>`](docs/owned-buffer.md):
+      move-only обёртка по схеме владеющего `Result` — `Some` переносит
+      ресурс, `match` потребляет обёртку (`_` держит ресурс до конца ветки),
+      `None` ничего не освобождает, `?` переносит payload или возвращает
+      `None`. Вложенные владеющие обёртки по-прежнему отклоняются.
 - [x] [`fs.read_all`](docs/owned-buffer.md): чтение целого файла в
       `Result<OwnedBuffer, fs.IoError>` с лимитом `max_bytes` (`EFBIG` сверх
       лимита, `EINVAL` при неположительном) — первый клиент переноса владения

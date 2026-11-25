@@ -2476,7 +2476,10 @@ unsafe fn cce_drop_owner(emitter: i64, slot: i64):
     cce_owner_flag(emitter, slot, 0)
     let storage: i64 = cce_soff(emitter, slot)
     if cc_is_owned_result(typ):
-        cce_e(emitter, cv_mod(cv_text("cmp qword ptr [rbp%+d], 0"), storage))
+        # Живой payload: Ok у Result и Some у Option имеют разные метки.
+        let live_tag: i64 = 0
+        if cv_name(cv_getkey(typ, "name"), "Option"): live_tag = 1
+        cce_e(emitter, cv_mod(cv_text("cmp qword ptr [rbp%+d], %d"), cv_pair(storage, cv_i(live_tag))))
         cce_e(emitter, cv_cat(cv_text("jne "), skip))
         storage = cv_add(storage, cv_getkey(typ, "payload_off"))
     cce_e(emitter, cv_mod(cv_text("lea rdi, [rbp%+d]"), storage))

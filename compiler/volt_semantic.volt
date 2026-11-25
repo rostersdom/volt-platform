@@ -277,7 +277,7 @@ unsafe fn cc_allowed_payload(typ: i64) -> bool:
     return cv_truth(cc_isscalar(typ)) or cv_classes(typ, "TStruct") or cc_is_tagged_value(typ)
 
 unsafe fn ccs_wrapper_type(v_self: i64, name: i64, args: i64, file: i64, line: i64, indirect: i64) -> i64:
-    let owned_ok: bool = cv_name(name, "Result") and cc_is_owned_struct(cv_at(args, 0))
+    let owned_ok: bool = (cv_name(name, "Result") or cv_name(name, "Option")) and cc_is_owned_struct(cv_at(args, 0))
     for i in 0..cv_len(args):
         let payload: i64 = cv_at(args, i)
         if owned_ok and i == 0: continue
@@ -2699,7 +2699,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                 if cv_name(v_name, "Ok"): v_expected = cv_at(args, 0)
                 if cv_name(v_name, "Err"): v_expected = cv_at(args, 1)
         v_payload = ccs_tf(v_self, cv_at(cv_getkey(v_e, "args"), 0), v_expected)
-        let owned_ok: bool = cv_name(v_name, "Ok") and cc_is_owned_result(v_hint) and cv_equal(v_payload, v_expected)
+        let owned_ok: bool = (cv_name(v_name, "Ok") and cc_is_owned_result(v_hint) and cv_equal(v_payload, v_expected)) or (cv_name(v_name, "Some") and cc_is_owned_struct(v_payload))
         if not owned_ok and not cc_allowed_payload(v_payload):
             let pieces_8: i64 = cv_list()
             cv_push(pieces_8, cv_format(v_name, ""))

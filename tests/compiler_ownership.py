@@ -89,6 +89,72 @@ match read_first(relay(checked_buffer("missing"))):
     Err(error): print(fs.errno(error))
 ''', "checked\nmatch a\ndrop a\nchecked\nread a\nread_first\ndrop a\n1\nread_first\n2\n")
 
+    def test_option_moves_some_through_let_argument_return_match_and_propagation(self):
+        self.check_run('''fn pass(input: Option<OwnedBuffer>) -> Option<OwnedBuffer>:
+    return input
+
+fn make(value: string) -> Option<OwnedBuffer>:
+    return Some(owned_buffer_new(value))
+
+fn relay(input: Option<OwnedBuffer>) -> Option<OwnedBuffer>:
+    let buffer = input?
+    return Some(buffer)
+
+fn empty() -> Option<OwnedBuffer>:
+    return None
+
+let direct: Option<OwnedBuffer> = None
+let moved = make("a")
+let again = pass(moved)
+match relay(again):
+    Some(buffer): defer print("match", owned_buffer_get(&buffer, 0) as char)
+    None: panic("expected buffer")
+match relay(empty()):
+    Some(buffer): panic("expected none")
+    None: print("propagated none")
+''', "match a\ndrop a\npropagated none\n")
+
+    def test_option_drops_only_live_some_after_arm_defers(self):
+        self.check_run('''fn make(value: string) -> Option<OwnedBuffer>:
+    return Some(owned_buffer_new(value))
+
+match make("a"):
+    _: defer print("wildcard")
+match make("b"):
+    None: panic("unexpected none")
+    _: defer print("second")
+match make("c"):
+    Some(buffer): print("some", owned_buffer_get(&buffer, 0) as char)
+    None: panic("unexpected none")
+let empty: Option<OwnedBuffer> = None
+print("end")
+''', "wildcard\ndrop a\nsecond\ndrop b\nsome c\ndrop c\nend\n")
+
+    def test_option_rejects_second_move_and_unsupported_storage(self):
+        header = '''fn make() -> Option<OwnedBuffer>:
+    return Some(owned_buffer_new("a"))
+
+fn consume(option: Option<OwnedBuffer>):
+    return
+
+let option = make()
+'''
+        for source, expected in (
+            ("let next = option\nconsume(option)", "после переноса"),
+            ("match option:\n    Some(buffer): print(1)\n    None: print(0)\nconsume(option)", "после переноса"),
+            ("option = make()", "нельзя копировать"),
+            ("defer consume(option)", "defer не может переносить"),
+            ("let nested: Option<Option<OwnedBuffer>> = None", "недопустимый тип payload"),
+            ("let wrong: Result<Option<OwnedBuffer>, i64> = Err(1)", "недопустимый тип payload"),
+            ("struct Bag:\n    owner: Option<OwnedBuffer>", "нельзя хранить в struct"),
+            ("let array = [option]", "нельзя хранить в массиве"),
+            ("extern fn external() -> Option<OwnedBuffer>", "запрещены в extern/native"),
+        ):
+            with self.subTest(source=source):
+                built = self.build(header + source + "\n")
+                self.assertEqual(built.returncode, 1, built.stdout + built.stderr)
+                self.assertIn(expected, built.stderr)
+
     def test_result_drops_only_live_ok_after_scope_and_arm_defers(self):
         self.check_run('''fn make(value: string) -> Result<OwnedBuffer, i64>:
     return Ok(owned_buffer_new(value))
@@ -170,8 +236,9 @@ let result = make()
              "let wrapped: Result<OwnedBuffer, i64> = Ok(buffer)", "пока он заимствован"),
             ("result = make()", "нельзя копировать"),
             ("defer consume(result)", "defer не может переносить"),
-            ("let wrapped: Option<OwnedBuffer> = None", "недопустимый тип payload"),
+            ("let wrapped: Option<Option<OwnedBuffer>> = None", "недопустимый тип payload"),
             ("let wrapped: Option<Result<OwnedBuffer, i64>> = None", "недопустимый тип payload"),
+            ("let wrong: Result<Option<OwnedBuffer>, i64> = Err(1)", "недопустимый тип payload"),
             ("let wrong: Result<i64, OwnedBuffer> = Ok(1)", "недопустимый тип payload"),
             ("struct Bag:\n    owner: Result<OwnedBuffer, i64>", "нельзя хранить в struct"),
             ("let array = [result]", "нельзя хранить в массиве"),
@@ -336,7 +403,7 @@ let item = owned_buffer_new("a")
             ("defer consume(item)", "defer не может переносить"),
             ("let copy = &item", "адрес OwnedBuffer"),
             ("let bag = [item]", "нельзя хранить в массиве"),
-            ("let wrapped = Some(item)", "недопустимый тип payload"),
+            ("let wrapped = Some(item)\nconsume(item)", "после переноса"),
         ):
             with self.subTest(source=source):
                 result = self.build(header + source + "\n")
@@ -443,6 +510,29 @@ match take("main.volt"):
     Err(error): panic("open failed")
 ''', "close 3\nclosed 0\nreused 3 1\nclose 3\nfinal 0\n")
 
+    def test_fd_option_moves_some_and_closes_only_live_some(self):
+        self.check_run(self.FCNTL + '''fn checked(path: string) -> Option<fs.OwnedFd>:
+    match fs.open_owned(path):
+        Ok(handle): return Some(handle)
+        Err(error): return None
+
+fn relay(input: Option<fs.OwnedFd>) -> Option<fs.OwnedFd>:
+    let handle = input?
+    return Some(handle)
+
+let moved = checked("main.volt")
+match relay(moved):
+    Some(handle): print("open", fs.owned_fd_number(&handle))
+    None: panic("open failed")
+match relay(checked("missing-file")):
+    Some(handle): panic("expected none")
+    None: print("none")
+match checked("main.volt"):
+    _: defer print("wildcard")
+let empty: Option<fs.OwnedFd> = None
+print("end", is_open(3))
+''', "open 3\nclose 3\nnone\nwildcard\nclose 3\nend 0\n")
+
     def test_fd_result_wildcard_drops_after_arm_defer(self):
         self.check_run('''match fs.open_owned("main.volt"):
     _: defer print("wildcard")
@@ -468,7 +558,7 @@ fn open_it() -> Result<fs.OwnedFd, fs.IoError>:
             ("        defer consume(item)", "defer не может переносить"),
             ("        let copy = &item", "адрес OwnedFd"),
             ("        let bag = [item]", "нельзя хранить в массиве"),
-            ("        let wrapped = Some(item)", "недопустимый тип payload"),
+            ("        let wrapped = Some(item)\n        consume(item)", "после переноса"),
             ("        let moved = item\n        moved = moved", "нельзя копировать"),
         ):
             with self.subTest(source=source):
@@ -482,7 +572,7 @@ fn open_it() -> Result<fs.OwnedFd, fs.IoError>:
              "    let handle = result?\n"
              "    let again = result\n"
              "    return Ok(0)", "после переноса"),
-            ("let wrapped: Option<fs.OwnedFd> = None", "недопустимый тип payload"),
+            ("let nested: Option<Option<fs.OwnedFd>> = None", "недопустимый тип payload"),
             ("let wrong: Result<i64, fs.OwnedFd> = Ok(1)", "недопустимый тип payload"),
             ("struct Bag:\n    owner: fs.OwnedFd", "нельзя хранить в struct"),
             ("extern fn external() -> Result<fs.OwnedFd, fs.IoError>", "запрещены в extern/native"),

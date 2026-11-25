@@ -403,8 +403,9 @@ anotación o usa un contexto que los determine. `let r: Result<i64, i32> =
 Err(22 as i32)` contiene exactamente un `i32`. También se admiten estructuras
 copiables, enum con datos y `Option`/`Result` anidados copiables, pero no vistas
 ni arreglos por valor. [`Result<OwnedBuffer, E>`](docs/owned-buffer.md) solo se
-puede mover y requiere un error copiable: `Ok` recibe el búfer y `match` o `?`
-consume el resultado. Los valores etiquetados pueden ser variables locales,
+puede mover y requiere un error copiable, al igual que `Option<OwnedBuffer>`:
+`Ok`/`Some` reciben el búfer y `match` o `?` consume la envoltura. Los valores
+etiquetados pueden ser variables locales,
 parámetros o resultados de funciones VOLT, pero no variables globales, constantes,
 campos, elementos de arreglo ni variables inicializadas automáticamente a cero.
 Solo se pueden reasignar valores etiquetados copiables del mismo tipo; el lado
@@ -559,7 +560,7 @@ Solo se admite Linux x86-64 con el subconjunto de ABI descrito. Comprobar
 `unsafe` asigna responsabilidades al llamador: no es una zona aislada. La
 comprobación de préstamos de vistas es léxica y la destrucción automática se
 limita a los tipos propietarios registrados, `OwnedBuffer` y `fs.OwnedFd`,
-incluso dentro de un `Result`. `Buffer<T>` y `fs.Descriptor` aún se liberan
+incluso dentro de un `Result` u `Option`. `Buffer<T>` y `fs.Descriptor` aún se liberan
 manualmente. No se implementan
 traits, genéricos con parámetros constantes, clausuras, tuplas, macros,
 `async`/`await`, bloques arbitrarios de ensamblador en línea ni un recolector de

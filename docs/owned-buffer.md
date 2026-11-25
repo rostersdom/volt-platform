@@ -96,6 +96,39 @@ match forward("."):
 ветки, также после её `defer`. Результат, отброшенный отдельным выражением,
 освобождается в конце этого выражения. Перенос не копирует байты самого буфера.
 
+## `Option<OwnedBuffer>`
+
+`Option<OwnedBuffer>` — такая же move-only обёртка по той же схеме, что и
+владеющий `Result`: `Some(buffer)` переносит буфер, вся обёртка некопируема
+даже в состоянии `None`, переносится через `let`, аргумент или `return`.
+`match` потребляет обёртку: ветка `Some(buffer)` получает владельца, ветка `_`
+держит неизвлечённый буфер до конца ветки (после её `defer`), а `None` ничего
+не освобождает — `drop` проверяет метку и освобождает только живой `Some`.
+`?` извлекает буфер из `Some` и переносит его, а при `None` возвращает `None`
+из охватывающей функции; по общему правилу `Option` её тип результата должен
+быть тем же `Option<OwnedBuffer>`.
+
+```volt
+use fs, owned_buffer
+
+fn checked(path: string) -> Option<OwnedBuffer>:
+    match fs.read_all(path, 4096):
+        Ok(buffer): return Some(buffer)
+        Err(error): return None
+
+fn relay(input: Option<OwnedBuffer>) -> Option<OwnedBuffer>:
+    let buffer = input?
+    return Some(buffer)
+
+match relay(checked("payload.bin")):
+    Some(buffer): print(owned_buffer_len(&buffer))
+    None: print("no payload")
+```
+
+Хранить владельца внутри `Err`, вкладывать владеющие обёртки друг в друга
+(`Option<Option<OwnedBuffer>>`, `Option<Result<OwnedBuffer, E>>`,
+`Result<Option<OwnedBuffer>, E>`) по-прежнему нельзя.
+
 ## `fs.read_all`: первый клиент
 
 `fs.read_all(path, max_bytes) -> Result<OwnedBuffer, fs.IoError>` читает файл
@@ -134,6 +167,6 @@ match load("payload.bin", 4096):
 буфер автоматическим `drop` при `return`, поэтому ни один путь не утекает.
 
 Частичный перенос, переприсваивание владельца, хранение в структурах и массивах,
-`Option<OwnedBuffer>`, `OwnedBuffer` в `Err`, вложение владеющего `Result` в другие
-обёртки, пользовательский `drop` и C ABI не поддерживаются. Существующие
+`OwnedBuffer` в `Err`, вложение владеющих обёрток друг в друга,
+пользовательский `drop` и C ABI не поддерживаются. Существующие
 `ByteBuffer`, `Buffer<T>` и `BorrowBuffer<T>` не меняются.

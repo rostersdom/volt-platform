@@ -107,8 +107,8 @@ unsafe fn cc_owner_title(typ: i64) -> i64:
     return cv_getkey(kind, "title")
 
 # shortcut: drop есть только у типов из реестра cc_owner_kinds и их прямых
-# Result; владельцам внутри struct, массивов и Option по-прежнему нужна модель
-# мест (place model).
+# Result/Option; владельцам внутри struct, массивов и вложенных обёрток
+# по-прежнему нужна модель мест (place model).
 unsafe fn ccs_check_ownership(sem: i64, fn_def: i64):
     if not cv_truth(cv_getkey(sem, "has_owned")): return
     let flow: i64 = cv_node("Ownership")
@@ -326,7 +326,7 @@ unsafe fn cc_owned_stmt(flow: i64, stmt: i64, moved: i64) -> bool:
             let entry: i64 = 0
             if owned:
                 let pattern: i64 = cv_getkey(arm, "pattern")
-                if cv_name(pattern, "Ok"):
+                if cv_name(pattern, "Ok") or cv_name(pattern, "Some"):
                     entry = cv_subscript(cv_getkey(sem, "slots"), cv_getkey(arm, "binding_slot"))
                 elif cv_name(pattern, "_"):
                     # Keep an ignored Ok alive until the arm has run its defers.

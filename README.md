@@ -389,8 +389,8 @@ requires at least one arm. Its patterns include `_`, `Enum.Variant`,
 variant must be covered exactly once; `_` covers the remaining variants and is
 last. Other types, overlapping
 patterns, guards, and structural destructuring are unsupported. Each binding
-is visible only in that arm. Copyable payloads are copied; `Ok` moves an owned
-buffer out of its result. For `Option`/`Result`, match a local value, parameter,
+is visible only in that arm. Copyable payloads are copied; `Ok`/`Some` move an
+owned buffer out of its wrapper. For `Option`/`Result`, match a local value, parameter,
 or function result rather than a direct constructor.
 
 `Option<T>` has `None` or `Some(T)`. `Result<T,E>` has `Ok(T)` or `Err(E)`.
@@ -399,8 +399,9 @@ when a constructor alone is ambiguous. For example, `let r: Result<i64, i32> =
 Err(22 as i32)` has a payload of exactly `i32`. Payloads may be scalars, copyable
 structures, enums, or copyable nested `Option`/`Result`, but not arrays or slices
 by value. [`Result<OwnedBuffer, E>`](docs/owned-buffer.md) is move-only with a
-copyable error type: `Ok` moves the buffer in, and `match` or `?` consumes the
-result. Tagged values can be locals, parameters, and results in ordinary VOLT
+copyable error type, and `Option<OwnedBuffer>` likewise: `Ok`/`Some` move the
+buffer in, and `match` or `?` consumes the wrapper. Tagged values can be
+locals, parameters, and results in ordinary VOLT
 functions, but not globals, constants, fields, array elements, or zero-initialized
 bindings. Only copyable tagged values can be reassigned; the right-hand side
 is evaluated once and must have the same type.
@@ -555,7 +556,7 @@ Runtime checks on indexing and arithmetic do not make raw pointers and FFI
 memory-safe. `unsafe` is a caller obligation, not a sandbox. Slice borrow checks
 are lexical, and automatic destruction is limited to the registered owning
 types `OwnedBuffer` and `fs.OwnedFd`, including
-when held in a `Result`. Ordinary `Buffer<T>` and `fs.Descriptor` still require manual release.
+when held in a `Result` or `Option`. Ordinary `Buffer<T>` and `fs.Descriptor` still require manual release.
 Traits, const generics, closures,
 tuple types, macros, `async`/`await`, arbitrary inline assembly blocks, and a
 garbage collector are not implemented. JavaScript promises and GPU dispatch
