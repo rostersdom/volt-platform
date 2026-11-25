@@ -1855,6 +1855,13 @@ unsafe fn ccs_tf(v_self: i64, v_e: i64, v_expected: i64) -> i64:
             cc_error(cv_text("BufferRead нельзя копировать или передавать за пределы операций чтения"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
             return 0
     cv_field(v_e, "type", v_t)
+    # A literal that can never fit the annotated integer type must fail at
+    # compile time, not trap at program start.
+    if cv_classes(v_e, "IntLit") and cv_classes(v_expected, "TInt"):
+        let v_bounds: i64 = cc_int_bounds(v_expected)
+        if cv_less(cv_getkey(v_e, "val"), cv_at(v_bounds, 0)) or cv_less(cv_at(v_bounds, 1), cv_getkey(v_e, "val")):
+            cc_error(cv_cat(cv_text("целочисленный литерал вне диапазона "), cc_display(v_expected)), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            return 0
     if cv_classes(v_t, "TTaggedEnum") and (cv_classes(v_e, "Call") or cc_is_sum_ctor(v_e)):
         cv_field(v_e, "temp_slot", ccs_declare_temp(v_self, v_t, cv_getkey(v_e, "line")))
     elif cv_classes(v_e, "Call") and cv_classes(v_t, "TWrapper") and (cc_is_owned_result(v_t) or cv_less(cv_i(16), cc_type_size(v_t))):

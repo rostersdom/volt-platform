@@ -904,6 +904,27 @@ print(callback(41))
             )
         finally:
             os.unlink(path)
+        # A literal that cannot fit is now rejected at compile time.
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("целочисленный литерал вне диапазона i8", result.stderr)
+        with tempfile.NamedTemporaryFile("w", suffix=".volt", delete=False) as source:
+            source.write(
+                "fn take(value: i8) -> i64:\n"
+                "    return value\n"
+                "let big: i64 = 1000\n"
+                "print(take(big as i16))\n"
+            )
+            path = source.name
+        try:
+            result = subprocess.run(
+                [VCC, path, "--run"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        finally:
+            os.unlink(path)
+        # A value known only at runtime still traps with a checked conversion.
         self.assertEqual(result.returncode, 1)
         self.assertIn("integer overflow", result.stderr)
         with tempfile.NamedTemporaryFile("w", suffix=".volt", delete=False) as source:
@@ -922,6 +943,27 @@ print(callback(41))
             )
         finally:
             os.unlink(path)
+        # A literal that cannot fit is now rejected at compile time.
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("целочисленный литерал вне диапазона i8", result.stderr)
+        with tempfile.NamedTemporaryFile("w", suffix=".volt", delete=False) as source:
+            source.write(
+                "fn result() -> i8:\n"
+                "    let big: i64 = 1000\n"
+                "    return big\n"
+                "print(result())\n"
+            )
+            path = source.name
+        try:
+            result = subprocess.run(
+                [VCC, path, "--run"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        finally:
+            os.unlink(path)
+        # A value known only at runtime still traps with a checked conversion.
         self.assertEqual(result.returncode, 1)
         self.assertIn("integer overflow", result.stderr)
 
@@ -1653,8 +1695,14 @@ print(run())
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "inf -inf\n", ""))
         self.assert_compile_error('print(-9223372036854775809)\n', "main.volt:1: ошибка: целочисленный литерал выходит за диапазон i64")
 
-    def test_deep_expressions_fail_cleanly_instead_of_crashing(self):
-        # 5000 nested parentheses used to overflow the parser stack (segfault).
+    def test_integer_literal_outside_annotated_range_is_a_compile_error(self):
+        # Used to compile and trap at program start with "volt: integer overflow".
+        self.assert_compile_error('let x: u8 = 256\n', "целочисленный литерал вне диапазона u8")
+        self.assert_compile_error('let x: i8 = -129\n', "целочисленный литерал вне диапазона i8")
+        result = self.compile_run('let a: u8 = 255\nlet b: i8 = -128\nprint(a, b)\n')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "255 -128\n", ""))
+
+    def test_deep_expressions_fail_cleanly_instead_of_crashing(self):        # 5000 nested parentheses used to overflow the parser stack (segfault).
         parens = 'print(' + '(' * 5000 + '1' + ')' * 5000 + ')\n'
         self.assert_compile_error(parens, "слишком глубокая вложенность выражения")
         # A flat 6000-term chain used to overflow the semantic stack (segfault)
