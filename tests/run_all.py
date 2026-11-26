@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the golden, compiler regression, and integration suites.
 
-Default behavior (no arguments) is unchanged in spirit: every suite runs as a
-subprocess and counts as passed when it exits with status 0.
+By default every suite runs as a subprocess and counts as passed when it
+exits with status 0. Unittest skips and their reasons are listed at the end.
 
 Groups (explicit allow-lists, see CORE_SUITES/BROWSER_SUITES below):
   --group core     the suites that run on a bare ubuntu-24.04 runner: no
@@ -19,6 +19,13 @@ Required suites:
   non-zero, collects no tests at all, or skips every test it has -- so a
   required suite can no longer pass vacuously via @unittest.skipUnless on an
   unsupported platform.
+
+Required tests:
+  --require-test SUITE.ClassName.test_name (repeatable) fails the run when the
+  named test did not actually execute: it was skipped (the reason is shown) or
+  no such test exists in the suite (unknown identifier). This catches PARTIAL
+  skips inside a required suite, which --require alone tolerates. A suite
+  named by --require-test is implicitly treated as --require'd.
 """
 import argparse
 from collections import deque
@@ -41,19 +48,14 @@ CORE_SUITES = (
     # Pure compiler suites: build and run generated ELF binaries only.
     "compiler_bootstrap", "compiler_fnptr", "compiler_lifetimes",
     "compiler_buffer_borrow", "compiler_manifest", "compiler_sum_types",
-    "compiler_modules", "compiler_ownership", "compiler_ownership_model", "compiler_slice_borrows",
+    "compiler_modules", "compiler_ownership", "compiler_ownership_model",
+    "compiler_arith_model", "compiler_slice_borrows",
     "compiler_eq_constraint", "compiler_c_struct", "compiler_debug",
     "compiler_fuzz",
-    # Golden compile-and-run tests; no native deps.
+    # Golden compile-and-run tests and regressions report optional SDL skips.
     "run",
-    # Compiler regressions; pure Linux syscall level except one test:
-    # test_snake_sdl_startup_and_quit_without_a_terminal builds
-    # apps/snake.volt, which does `link "-lSDL2"`, so without libSDL2.so the
-    # suite fails. Kept in core because 105 of 106 tests are pure compiler
-    # regressions and the suite guards its other optional deps per-test
-    # (cc, readelf, /dev/full) -- the snake test needs the same guard, which
-    # belongs to the suite file, not to this runner.
     "regressions",
+    "test_run_all",
     # Linux x86-64 System V ABI fixtures; skips cleanly without `cc`.
     "abi_integration",
     # vstd suites: Linux x86-64 syscalls/pthreads only, no display, no SDL.
@@ -92,20 +94,34 @@ STATS_PREFIX = "RUN_ALL_STATS "
 # "Failed:" list.
 TAIL_LINES = 40
 
-# Driver for --require suites: loads the suite as a module and runs it under
-# unittest, then reports executed/skipped counts on a STATS_PREFIX line so the
-# runner can tell "all tests skipped" apart from a real pass. unittest writes
-# its progress to stderr; the runner tees both streams through live and keeps
-# their tails for the failure recap.
+# Driver for unittest suites: loads the suite as a module (named after the
+# file stem, so unittest test ids come out as "suite.Class.test") and runs it
+# under unittest, then reports which tests ran and why others were skipped.
 DRIVER = r"""
 import importlib.util, json, sys, unittest
-spec = importlib.util.spec_from_file_location("volt_required_suite", sys.argv[1])
+from pathlib import Path
+path = Path(sys.argv[1])
+sys.path.insert(0, str(path.parent))
+spec = importlib.util.spec_from_file_location(path.stem, path)
 module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-result = unittest.TextTestRunner(verbosity=1).run(
-    unittest.defaultTestLoader.loadTestsFromModule(module))
-stats = {"testsRun": result.testsRun, "skipped": len(result.skipped),
-         "failures": len(result.failures), "errors": len(result.errors)}
+suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+
+class Result(unittest.TextTestResult):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.started = set()
+
+    def startTest(self, test):
+        self.started.add(test.id())
+        super().startTest(test)
+
+result = unittest.TextTestRunner(resultclass=Result).run(suite)
+skipped = [{"id": test.id(), "test": getattr(test, "test_case", test).id(),
+            "reason": reason} for test, reason in result.skipped]
+executed = sorted(result.started - {entry["test"] for entry in skipped})
+stats = {"executed": executed, "skippedTests": skipped}
 print("RUN_ALL_STATS " + json.dumps(stats), flush=True)
 sys.exit(0 if result.wasSuccessful() else 1)
 """
@@ -159,7 +175,7 @@ def run_suite(name, tests_dir, env, cwd, collect_stats=False):
     return SuiteResult(name, proc.wait(), stats, stdout_tail, stderr_tail)
 
 
-def evaluate(result, required):
+def evaluate(result, required, required_tests=None):
     """Return a failure description for a finished suite, or None."""
     if result.returncode:
         return f"{result.name} exited with status {result.returncode}"
@@ -168,21 +184,40 @@ def evaluate(result, required):
     stats = result.stats
     if stats is None:
         return f"{result.name} is required but produced no unittest statistics"
-    if stats["testsRun"] == 0:
+    executed = set(stats["executed"])
+    if required_tests and result.name in required_tests:
+        for ident in sorted(required_tests[result.name]):
+            suite, cls, _test = ident.split(".")
+            # unittest reports a skipped setup fixture once under its own id,
+            # without ever starting the individual tests it covers.
+            setups = {f"setUpClass ({suite}.{cls})", f"setUpModule ({suite})"}
+            for skip in stats["skippedTests"]:
+                if skip["test"] == ident or skip["id"] in setups:
+                    return f"required test {ident} was skipped: {skip['reason']}"
+            if ident not in executed:
+                return f"required test {ident} was not found or did not run"
+    if not executed:
+        if stats["skippedTests"]:
+            return f"{result.name} is required but all tests were skipped"
         return f"{result.name} is required but ran no tests"
-    if stats["skipped"] >= stats["testsRun"]:
-        return (f"{result.name} is required but all {stats['testsRun']} "
-                f"test(s) were skipped")
     return None
 
 
-def execute_suites(names, required, tests_dir, env, cwd):
-    """Run the given suites; return (problem, SuiteResult) pairs for failures."""
+def execute_suites(names, required, tests_dir, env, cwd, required_tests=None,
+                   results=None):
+    """Run the given suites; return (problem, SuiteResult) pairs for failures.
+
+    Every finished SuiteResult is appended to `results` when a list is given,
+    so the caller can build the final skip report.
+    """
     failures = []
     for name in names:
         print(f"\n=== tests/{name}.py ===", flush=True)
-        result = run_suite(name, tests_dir, env, cwd, collect_stats=name in required)
-        problem = evaluate(result, required)
+        # The golden-output runner is a standalone script, not a unittest suite.
+        result = run_suite(name, tests_dir, env, cwd, collect_stats=name != "run" or name in required)
+        if results is not None:
+            results.append(result)
+        problem = evaluate(result, required, required_tests)
         if problem:
             failures.append((problem, result))
             print(f"FAIL: {problem}", file=sys.stderr, flush=True)
@@ -209,6 +244,19 @@ def print_failure_recaps(suite_failures):
             print("(the suite produced no output)", file=sys.stderr)
 
 
+def print_skip_report(results):
+    """List every reported unittest skip and its reason."""
+    entries = [(entry["id"], entry["reason"])
+               for result in results
+               if result.stats
+               for entry in result.stats["skippedTests"]]
+    if not entries:
+        return
+    print("\nSkipped tests:", flush=True)
+    for ident, reason in entries:
+        print(f"  {ident}: {reason}", flush=True)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -222,6 +270,13 @@ def parse_args(argv=None):
                         help="require SUITE to really run (repeatable): the run "
                              "fails if it errors, collects no tests, or skips "
                              "every test; SUITE must belong to the selected group")
+    parser.add_argument("--require-test", action="append", default=[],
+                        metavar="SUITE.CLASS.TEST", dest="require_test",
+                        help="require one test to really execute (repeatable): "
+                             "the run fails if SUITE.CLASS.TEST was skipped "
+                             "(the reason is shown) or does not exist; SUITE "
+                             "must belong to the selected group and is "
+                             "implicitly treated as --require'd")
     parser.add_argument("--skip-verify-bootstrap", action="store_true",
                         help="omit the `make verify-bootstrap` step of the core "
                              "group (CI runs it as its own job step)")
@@ -239,6 +294,27 @@ def main(argv=None):
               f"'{args.group}': {', '.join(unknown)}\n"
               f"Available: {', '.join(names)}", file=sys.stderr)
         return 2
+    required_tests = {}
+    bad_tests = []
+    for ident in args.require_test:
+        parts = ident.split(".")
+        if len(parts) != 3 or not all(parts):
+            bad_tests.append(ident)
+            continue
+        if parts[0] not in names:
+            unknown.append(ident)
+            continue
+        required_tests.setdefault(parts[0], set()).add(ident)
+    if bad_tests:
+        print("Required test identifier(s) must have the form "
+              f"SUITE.ClassName.test_name: {', '.join(bad_tests)}",
+              file=sys.stderr)
+        return 2
+    if unknown:
+        print("Required test(s) reference suite(s) not in group "
+              f"'{args.group}': {', '.join(unknown)}\n"
+              f"Available: {', '.join(names)}", file=sys.stderr)
+        return 2
     build = subprocess.run(["make", "compiler"], cwd=root)
     if build.returncode:
         return build.returncode
@@ -249,9 +325,14 @@ def main(argv=None):
         if boot.returncode:
             failures.append(f"make verify-bootstrap exited with status {boot.returncode}")
     env = {**os.environ, "SDL_VIDEODRIVER": "dummy", "VOLT_COMPILER": str(root / "volt")}
-    suite_failures = execute_suites(names, set(args.require), tests, env, root)
+    required = set(args.require) | set(required_tests)
+    results = []
+    suite_failures = execute_suites(names, required, tests, env, root,
+                                    required_tests=required_tests,
+                                    results=results)
     failures.extend(problem for problem, _result in suite_failures)
     print(f"\n{len(names) - len(suite_failures)}/{len(names)} suites passed", flush=True)
+    print_skip_report(results)
     if failures:
         print("Failed:", file=sys.stderr)
         for problem in failures:

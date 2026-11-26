@@ -24,6 +24,21 @@ if __name__ == "__main__":
     unittest.main()
 '''
 
+PARTIALLY_SKIPPED = '''
+import unittest
+
+class Partial(unittest.TestCase):
+    def test_runs(self):
+        self.assertTrue(True)
+
+    @unittest.skip("demonstrating a partial skip")
+    def test_skipped(self):
+        self.fail("must be skipped")
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+
 ALL_SKIPPED = '''
 import unittest
 
@@ -115,16 +130,20 @@ class ExecuteSuites(unittest.TestCase):
     def write_suite(self, name, source):
         (self.tests_dir / (name + ".py")).write_text(source, encoding="utf-8")
 
-    def execute_full(self, names, required=()):
+    def execute_full(self, names, required=(), required_tests=None):
+        results = []
         with open(os.devnull, "w") as devnull, \
              unittest.mock.patch("sys.stdout", devnull), \
              unittest.mock.patch("sys.stderr", devnull):
-            return run_all.execute_suites(names, set(required), self.tests_dir,
-                                          dict(os.environ), self.tests_dir)
+            failures = run_all.execute_suites(
+                names, set(required) | set(required_tests or ()),
+                self.tests_dir, dict(os.environ), self.tests_dir,
+                required_tests=required_tests, results=results)
+        return failures, results
 
-    def execute(self, names, required=()):
-        return [problem for problem, _result in
-                self.execute_full(names, required)]
+    def execute(self, names, required=(), required_tests=None):
+        failures, _results = self.execute_full(names, required, required_tests)
+        return [problem for problem, _result in failures]
 
     def test_required_suite_with_real_tests_passes(self):
         self.write_suite("fake_pass", PASSING)
@@ -155,7 +174,7 @@ class ExecuteSuites(unittest.TestCase):
 
     def test_failed_suite_keeps_output_tails_for_the_recap(self):
         self.write_suite("fake_noisy", NOISY_FAILING)
-        failures = self.execute_full(["fake_noisy"], required=["fake_noisy"])
+        failures, _results = self.execute_full(["fake_noisy"], required=["fake_noisy"])
         self.assertEqual(len(failures), 1)
         _problem, result = failures[0]
         self.assertIn("fake_noisy", _problem)
@@ -167,7 +186,7 @@ class ExecuteSuites(unittest.TestCase):
 
     def test_tails_are_bounded(self):
         self.write_suite("fake_spam", SPAM_FAILING)
-        failures = self.execute_full(["fake_spam"], required=["fake_spam"])
+        failures, _results = self.execute_full(["fake_spam"], required=["fake_spam"])
         self.assertEqual(len(failures), 1)
         _problem, result = failures[0]
         self.assertLessEqual(len(result.stdout_tail), run_all.TAIL_LINES)
@@ -176,7 +195,7 @@ class ExecuteSuites(unittest.TestCase):
 
     def test_failure_recap_reprints_tails_to_stderr(self):
         self.write_suite("fake_noisy", NOISY_FAILING)
-        failures = self.execute_full(["fake_noisy"], required=["fake_noisy"])
+        failures, _results = self.execute_full(["fake_noisy"], required=["fake_noisy"])
         recap = io.StringIO()
         with unittest.mock.patch("sys.stderr", recap):
             run_all.print_failure_recaps(failures)
@@ -184,6 +203,128 @@ class ExecuteSuites(unittest.TestCase):
         self.assertIn("fake_noisy", text)
         self.assertIn("marker on stdout", text)
         self.assertIn("marker on stderr", text)
+
+
+class RequiredTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="volt-run-all-test-")
+        self.addCleanup(tmp.cleanup)
+        self.tests_dir = Path(tmp.name)
+
+    def write_suite(self, name, source):
+        (self.tests_dir / (name + ".py")).write_text(source, encoding="utf-8")
+
+    def execute(self, names, required=(), required_tests=None):
+        with open(os.devnull, "w") as devnull, \
+             unittest.mock.patch("sys.stdout", devnull), \
+             unittest.mock.patch("sys.stderr", devnull):
+            failures = run_all.execute_suites(
+                names, set(required) | set(required_tests or ()),
+                self.tests_dir, dict(os.environ), self.tests_dir,
+                required_tests=required_tests)
+        return [problem for problem, _result in failures]
+
+    def test_required_test_that_executes_passes(self):
+        self.write_suite("fake_pass", PASSING)
+        failures = self.execute(
+            ["fake_pass"],
+            required_tests={"fake_pass": {"fake_pass.Passing.test_ok"}})
+        self.assertEqual(failures, [])
+
+    def test_required_test_skipped_fails_with_reason(self):
+        self.write_suite("fake_partial", PARTIALLY_SKIPPED)
+        failures = self.execute(
+            ["fake_partial"],
+            required_tests={"fake_partial": {"fake_partial.Partial.test_skipped"}})
+        self.assertEqual(len(failures), 1)
+        self.assertIn("fake_partial.Partial.test_skipped", failures[0])
+        self.assertIn("skipped", failures[0])
+        self.assertIn("demonstrating a partial skip", failures[0])
+
+    def test_required_test_never_started_when_class_setup_skips(self):
+        self.write_suite("fake_class_skip", PASSING + '''
+class ClassSetup(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raise unittest.SkipTest("missing fixture for class")
+
+    def test_never_started(self):
+        self.fail("must not run")
+''')
+        failures = self.execute(
+            ["fake_class_skip"],
+            required_tests={"fake_class_skip": {"fake_class_skip.ClassSetup.test_never_started"}})
+        self.assertEqual(len(failures), 1)
+        self.assertIn("fake_class_skip.ClassSetup.test_never_started", failures[0])
+        self.assertIn("missing fixture for class", failures[0])
+
+    def test_required_test_reports_a_skipped_subtest(self):
+        self.write_suite("fake_subtest_skip", PASSING + '''
+class Partial(unittest.TestCase):
+    def test_runs(self):
+        with self.subTest(fixture="C"):
+            self.skipTest("missing C fixture")
+''')
+        failures = self.execute(
+            ["fake_subtest_skip"],
+            required_tests={"fake_subtest_skip": {"fake_subtest_skip.Partial.test_runs"}})
+        self.assertEqual(len(failures), 1)
+        self.assertIn("fake_subtest_skip.Partial.test_runs", failures[0])
+        self.assertIn("missing C fixture", failures[0])
+
+    def test_required_test_unknown_identifier_fails(self):
+        self.write_suite("fake_pass", PASSING)
+        failures = self.execute(
+            ["fake_pass"],
+            required_tests={"fake_pass": {"fake_pass.Passing.test_missing"}})
+        self.assertEqual(len(failures), 1)
+        self.assertIn("fake_pass.Passing.test_missing", failures[0])
+        self.assertIn("not found", failures[0])
+
+    def test_partially_skipped_suite_passes_without_required_tests(self):
+        # --require alone tolerates partial skips; --require-test closes that.
+        self.write_suite("fake_partial", PARTIALLY_SKIPPED)
+        self.assertEqual(self.execute(["fake_partial"], required=["fake_partial"]),
+                         [])
+
+    def test_skip_report_lists_reasons_even_for_optional_suites(self):
+        self.write_suite("fake_partial", PARTIALLY_SKIPPED)
+        results = []
+        with open(os.devnull, "w") as devnull, \
+             unittest.mock.patch("sys.stdout", devnull), \
+             unittest.mock.patch("sys.stderr", devnull):
+            run_all.execute_suites(["fake_partial"], set(),
+                                   self.tests_dir, dict(os.environ),
+                                   self.tests_dir, results=results)
+        report = io.StringIO()
+        with unittest.mock.patch("sys.stdout", report):
+            run_all.print_skip_report(results)
+        text = report.getvalue()
+        self.assertIn("fake_partial.Partial.test_skipped", text)
+        self.assertIn("demonstrating a partial skip", text)
+        self.assertNotIn("test_runs", text)
+
+
+class RequiredTestArgValidation(unittest.TestCase):
+    def parse_error(self, argv):
+        with unittest.mock.patch("sys.stderr", io.StringIO()) as err:
+            code = run_all.main(argv)
+        return code, err.getvalue()
+
+    def test_bad_identifier_format_is_rejected(self):
+        code, err = self.parse_error(
+            ["--group", "core", "--skip-verify-bootstrap",
+             "--require-test", "compiler_debug"])
+        self.assertEqual(code, 2)
+        self.assertIn("SUITE.ClassName.test_name", err)
+
+    def test_suite_outside_the_group_is_rejected(self):
+        code, err = self.parse_error(
+            ["--group", "browser", "--skip-verify-bootstrap",
+             "--require-test", "compiler_debug.CompilerDebug."
+                              "test_gdb_next_steps_through_statements"])
+        self.assertEqual(code, 2)
+        self.assertIn("not in group", err)
 
 
 if __name__ == "__main__":

@@ -4,22 +4,42 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   # Core compiler/stdlib checks on Linux x86-64. The required suites must not
   # pass vacuously: run_all.py fails the job if a --require suite skips every
-  # test (e.g. via a platform skipUnless).
+  # test (e.g. via a platform skipUnless), and --require-test pins individual
+  # tests that must actually execute (not be skipped), so a partial skip of
+  # the C/gdb-dependent tests inside an otherwise green suite fails the job.
   core:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install C, GDB and TLS test dependencies
+        # The loopback TLS fixture links against OpenSSL, even when it rejects
+        # the request before opening a connection.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential gdb libssl-dev
 
       - name: Verify the two-stage bootstrap
         # Rebuilds the compiler twice from bootstrap/volt-linux-x86_64 and
         # compares the binaries (see the verify-bootstrap Makefile target).
         run: make verify-bootstrap
 
+      - name: Check the generated Russian reference
+        run: python3 docs/sync_readme.py --check
+
       - name: Run the core suites
         # --skip-verify-bootstrap: the step above already did it.
+        # --require-test pins: the C-fixture fnptr test, the extern-struct
+        # C-fixture tests, and the gdb "next" stepping test must EXECUTE --
+        # a partial skip (missing cc/gdb) fails the job, not just a full one.
         run: >
           python3 tests/run_all.py --group core --skip-verify-bootstrap
           --require compiler_ownership
@@ -27,25 +47,96 @@ jobs:
           --require abi_integration
           --require vstd_io
           --require vstd_fs
+          --require-test abi_integration.AbiIntegration.test_fixed_extern_mixed_stack_arguments
+          --require-test abi_integration.AbiIntegration.test_c_callback_mixed_stack_arguments
+          --require-test compiler_fnptr.FnPtrCalls.test_c_pointer_mixed_stack_nested_and_narrow_results
+          --require-test compiler_c_struct.CStructABI.test_one_eightbyte_layout_argument_and_result
+          --require-test compiler_c_struct.CStructABI.test_mixed_register_classes_and_stack_rollback
+          --require-test compiler_c_struct.CStructABI.test_narrow_results_and_arguments_are_snapshots
+          --require-test compiler_debug.CompilerDebug.test_gdb_next_steps_through_statements
+          --require-test compiler_debug.CompilerDebug.test_gdb_shows_args_locals_and_nested_scopes
+          --require-test compiler_debug.CompilerDebug.test_gdb_shows_loop_and_match_bindings_in_their_bodies
+          --require-test compiler_debug.CompilerDebug.test_gdb_uses_outer_scope_in_defer_on_nested_return
 
-  # Browser suites are a separate group: python3 tests/run_all.py --group browser
-  # The group is an explicit allow-list (see BROWSER_SUITES in run_all.py):
-  # the browser_* suites plus sdl_integration and volt_launcher_integration,
-  # which link -lSDL2 through vstd/sdl.volt.
-  #
-  # They need the native browser stack (SDL2, Cairo, Pango, OpenSSL 3, zlib,
-  # libwebp) plus TurboJPEG 3 (tj3*), which Ubuntu 24.04 does not package --
-  # it must be installed separately (previously a checksum-verified 3.2.1
-  # release tarball). That setup is intentionally kept OUT of the core job.
-  #
-  # Until a runner image with those dependencies exists, this job is a
-  # documented stub and does not execute the browser suites.
   browser:
     runs-on: ubuntu-24.04
+    env:
+      DISPLAY: ""
+      WAYLAND_DISPLAY: ""
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+      TURBOJPEG_VERSION: "3.2.1"
+      # sha256 of the official release tarball
+      # https://github.com/libjpeg-turbo/libjpeg-turbo/releases/tag/3.2.1
+      TURBOJPEG_SHA256: "c27ad72a68da151177929aa969ae773a2da5ac2af9ce946079314fdac8cece7f"
+      TURBOJPEG_TARBALL: /tmp/libjpeg-turbo-3.2.1.tar.gz
     steps:
       - uses: actions/checkout@v4
-      - name: Browser suites not wired up yet
+        with:
+          persist-credentials: false
+
+      - name: Install the native browser stack
         run: |
-          echo "browser group: python3 tests/run_all.py --group browser"
-          echo "blocked on runner deps: SDL2/Cairo/Pango/OpenSSL/zlib/libwebp"
-          echo "plus TurboJPEG 3 (tj3*, checksum-verified 3.2.1) not in Ubuntu 24.04"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake nasm pkg-config ca-certificates curl \
+            libsdl2-dev libcairo2-dev libpango1.0-dev \
+            libssl-dev zlib1g-dev libwebp-dev \
+            openssl fontconfig fonts-dejavu-core
+
+      - name: Configure grayscale antialiasing
+        run: |
+          # Noble enables RGB subpixel rendering; the pixel checks expect neutral text.
+          sudo tee /etc/fonts/conf.d/99-volt-ci-grayscale.conf >/dev/null <<'EOF'
+          <?xml version="1.0"?>
+          <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+          <fontconfig>
+            <match target="font">
+              <edit name="rgba" mode="assign"><const>none</const></edit>
+            </match>
+          </fontconfig>
+          EOF
+
+      - name: Cache the TurboJPEG release tarball
+        id: turbojpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TURBOJPEG_TARBALL }}
+          key: turbojpeg-${{ env.TURBOJPEG_VERSION }}-${{ env.TURBOJPEG_SHA256 }}
+
+      - name: Download the TurboJPEG release tarball
+        if: steps.turbojpeg-cache.outputs.cache-hit != 'true'
+        run: >
+          curl -fL --retry 3 -o "$TURBOJPEG_TARBALL"
+          "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/$TURBOJPEG_VERSION/libjpeg-turbo-$TURBOJPEG_VERSION.tar.gz"
+
+      # The checksum is verified on every run, cache hit or not: a poisoned
+      # or truncated cache entry must not make it into the build.
+      - name: Verify the TurboJPEG checksum
+        run: echo "$TURBOJPEG_SHA256  $TURBOJPEG_TARBALL" | sha256sum -c -
+
+      - name: Build and install TurboJPEG
+        run: |
+          work=$(mktemp -d "$RUNNER_TEMP/turbojpeg.XXXXXX")
+          src="$work/libjpeg-turbo-$TURBOJPEG_VERSION"
+          build="$work/build"
+          tar -C "$work" -xzf "$TURBOJPEG_TARBALL"
+          cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_STATIC=0 -DWITH_TOOLS=0 -DWITH_TESTS=0
+          cmake --build "$build" --target turbojpeg -j"$(nproc)"
+          # /usr/local/lib is one of the compiler's library search dirs
+          # (compiler/elf_imports.volt) and is covered by ldconfig.
+          sudo cp -a "$build"/libturbojpeg.so* /usr/local/lib/
+          sudo cp "$src/src/turbojpeg.h" /usr/local/include/
+          sudo ldconfig
+
+      - name: Build the browser
+        run: |
+          make browser
+          ldd apps/bin/browser | grep -F 'libturbojpeg.so.0 => /usr/local/lib/'
+
+      - name: Run the browser suites
+        run: >
+          python3 tests/run_all.py --group browser
+          --require-test browser_navigation.BrowserLocalViewer.test_http_url_renders_fragmented_loopback_response
+          --require-test browser_visual.BrowserVisual.test_linked_cascade_grid_media_and_png
