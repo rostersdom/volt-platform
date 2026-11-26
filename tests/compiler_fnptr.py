@@ -111,11 +111,22 @@ unsafe: invoke(empty)
 ''', "", "volt: null fnptr call\n", status=1)
 
     def test_numeric_argument_conversion_checks_range(self):
-        self.check_program('''fn byte(n: i8):
+        # A literal that cannot fit i8 is rejected at compile time.
+        literal = self.compile_program('''fn byte(n: i8):
     print(n)
 unsafe:
     let f = callback(byte)
     f(128)
+''')
+        self.assertEqual(literal.returncode, 1, literal.stdout + literal.stderr)
+        self.assertIn("целочисленный литерал вне диапазона i8", literal.stderr)
+        # A runtime value still traps through the indirect call.
+        self.check_program('''fn byte(n: i8):
+    print(n)
+unsafe:
+    let f = callback(byte)
+    let big: i64 = 128
+    f(big as i16)
 ''', "", "volt: integer overflow\n", status=1)
 
     def test_call_diagnostics(self):
