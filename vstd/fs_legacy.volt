@@ -55,10 +55,13 @@ fn __volt_fs_path_status(status: i64) -> Result<i64, i32>:
     return Ok(status)
 
 # Query an already open descriptor by handle (statx with AT_EMPTY_PATH), not
-# by path: there is no stat→open race. metadata receives stx_mask (word 0),
-# stx_mode (u16 at byte offset 28) and stx_size (word 5).
+# by path: there is no stat→open race. Only return metadata whose stx_mask
+# confirms both stx_mode's file type and stx_size.
 unsafe fn fd_stat(fd: i64, metadata: ptr<u64>) -> Result<i64, i32>:
-    let status: i64 = __volt_fs_statx(fd, "" as ptr<char>, FS_AT_EMPTY_PATH, STATX_TYPE | STATX_SIZE, metadata)
+    let required: i64 = STATX_TYPE | STATX_SIZE
+    let status: i64 = __volt_fs_statx(fd, "" as ptr<char>, FS_AT_EMPTY_PATH, required, metadata)
+    if status >= 0 and (metadata[0] & required) != required:
+        return Err(ERR_NOT_SUPPORTED)
     return __volt_fs_path_status(status)
 
 

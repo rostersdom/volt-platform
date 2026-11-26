@@ -492,7 +492,8 @@ fn is_open(fd: i64) -> i64:
     return input
 
 fn consume(input: fs.OwnedFd):
-    defer print("read", fs.owned_fd_number(&input))
+    unsafe:
+        defer print("read", fs.owned_fd_number(&input))
 
 fn checked(path: string) -> Result<fs.OwnedFd, fs.IoError>:
     let handle = fs.open_owned(path)?
@@ -500,7 +501,7 @@ fn checked(path: string) -> Result<fs.OwnedFd, fs.IoError>:
 
 match checked("main.volt"):
     Ok(handle):
-        print("open", fs.owned_fd_number(&handle))
+        unsafe: print("open", fs.owned_fd_number(&handle))
         let moved = pass(handle)
         consume(moved)
         print("after", is_open(3))
@@ -510,7 +511,8 @@ match checked("main.volt"):
     def test_fd_closes_once_after_defer_on_propagation(self):
         self.check_run(self.FCNTL + '''fn probe(path: string) -> Result<i64, fs.IoError>:
     let handle = fs.open_owned(path)?
-    let raw = fs.owned_fd_number(&handle)
+    let raw: i64
+    unsafe: raw = fs.owned_fd_number(&handle)
     defer print("defer", is_open(raw))
     let info = fs.stat("missing-file")?
     return Ok(raw)
@@ -526,15 +528,16 @@ match probe("main.volt"):
         # would kill the reused descriptor.
         self.check_run(self.FCNTL + '''fn take(path: string) -> Result<i64, fs.IoError>:
     let handle = fs.open_owned(path)?
-    return Ok(fs.owned_fd_number(&handle))
+    unsafe: return Ok(fs.owned_fd_number(&handle))
 
 match take("main.volt"):
     Ok(raw):
         print("closed", is_open(raw))
         match fs.open_owned("main.volt"):
             Ok(again):
-                let reused = fs.owned_fd_number(&again)
-                print("reused", reused, is_open(reused))
+                unsafe:
+                    let reused = fs.owned_fd_number(&again)
+                    print("reused", reused, is_open(reused))
             Err(error): panic("reopen failed")
         print("final", is_open(raw))
     Err(error): panic("open failed")
@@ -552,7 +555,8 @@ fn relay(input: Option<fs.OwnedFd>) -> Option<fs.OwnedFd>:
 
 let moved = checked("main.volt")
 match relay(moved):
-    Some(handle): print("open", fs.owned_fd_number(&handle))
+    Some(handle):
+        unsafe: print("open", fs.owned_fd_number(&handle))
     None: panic("open failed")
 match relay(checked("missing-file")):
     Some(handle): panic("expected none")
@@ -592,8 +596,9 @@ print("end", is_open(3))
             Err(error): panic("close failed")
         match fs.open_owned("main.volt"):
             Ok(again):
-                let reused = fs.owned_fd_number(&again)
-                print("reused", reused, is_open(reused))
+                unsafe:
+                    let reused = fs.owned_fd_number(&again)
+                    print("reused", reused, is_open(reused))
             Err(error): panic("reopen failed")
         print("final", is_open(3))
     Err(error): panic("open failed")
@@ -604,9 +609,9 @@ print("end", is_open(3))
     Ok(handle):
 '''
         for source, expected in (
-            ("        fs.close_owned(handle)\n        print(fs.owned_fd_number(&handle))", "после переноса"),
+            ("        fs.close_owned(handle)\n        fs.wait_readable(&handle, 0)", "после переноса"),
             ("        fs.close_owned(handle)\n        fs.close_owned(handle)", "после переноса"),
-            ("        let again = fs.close_owned(handle)\n        print(fs.owned_fd_number(&handle))", "после переноса"),
+            ("        let again = fs.close_owned(handle)\n        fs.wait_readable(&handle, 0)", "после переноса"),
         ):
             with self.subTest(source=source):
                 built = self.build(header + source + "\n    Err(error): panic(\"open failed\")\n")
@@ -614,11 +619,19 @@ print("end", is_open(3))
                 self.assertIn(expected, built.stderr)
         # A deferred read borrows the owner, so close_owned cannot take it.
         built = self.build(header +
-                           "        defer print(fs.owned_fd_number(&handle))\n"
+                           "        defer fs.wait_readable(&handle, 0)\n"
                            "        fs.close_owned(handle)\n"
                            "    Err(error): panic(\"open failed\")\n")
         self.assertEqual(built.returncode, 1, built.stdout + built.stderr)
         self.assertIn("пока он заимствован", built.stderr)
+
+    def test_raw_fd_number_requires_unsafe(self):
+        built = self.build('''match fs.open_owned("main.volt"):
+    Ok(handle): print(fs.owned_fd_number(&handle))
+    Err(error): panic("open failed")
+''')
+        self.assertEqual(built.returncode, 1, built.stdout + built.stderr)
+        self.assertIn("требует unsafe", built.stderr)
 
     def test_fd_rejects_moves_copies_and_unsupported_storage(self):
         header = '''fn consume(input: fs.OwnedFd):
@@ -634,9 +647,9 @@ fn open_it() -> Result<fs.OwnedFd, fs.IoError>:
         for source, expected in (
             ("        let moved = item\n        consume(item)", "после переноса"),
             ("        consume(item)\n        consume(item)", "после переноса"),
-            ("        if true: consume(item)\n        print(fs.owned_fd_number(&item))", "после переноса"),
+            ("        if true: consume(item)\n        fs.wait_readable(&item, 0)", "после переноса"),
             ("        for i in 0..3:\n            consume(item)\n            continue", "следующей итерации"),
-            ("        defer print(fs.owned_fd_number(&item))\n        consume(item)", "пока он заимствован"),
+            ("        defer fs.wait_readable(&item, 0)\n        consume(item)", "пока он заимствован"),
             ("        defer consume(item)", "defer не может переносить"),
             ("        let copy = &item", "адрес OwnedFd"),
             ("        let bag = [item]", "нельзя хранить в массиве"),

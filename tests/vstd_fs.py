@@ -4,6 +4,7 @@ import errno
 import os
 from pathlib import Path
 import platform
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -28,9 +29,9 @@ class VstdFs(unittest.TestCase):
         cls.build = Path(tmp.name)
         cls.env = {"PATH": "", "TMPDIR": tmp.name}
 
-    def run_fixture(self, name, cwd, expected):
+    def run_fixture(self, name, cwd, expected, *, compiler=VOLT):
         exe = self.build / name
-        built = subprocess.run([VOLT, FIXTURES / f"{name}.volt", "-o", exe],
+        built = subprocess.run([compiler, FIXTURES / f"{name}.volt", "-o", exe],
                                cwd=self.build, env=self.env, capture_output=True, text=True, timeout=30)
         self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
         elf = exe.read_bytes()
@@ -83,6 +84,46 @@ class VstdFs(unittest.TestCase):
             started = time.monotonic()
             self.run_fixture("vstd_fs_fifo", cwd, f"err {errno.ESPIPE}")
             self.assertLess(time.monotonic() - started, 4, "read_all blocked on a FIFO")
+
+    def test_read_all_closes_without_reading_when_statx_omits_required_fields(self):
+        with tempfile.TemporaryDirectory(dir=self.build, prefix="statx-mask-") as tmp:
+            cwd = Path(tmp)
+            compiler = cwd / "volt"
+            shutil.copy2(VOLT, compiler)
+            shutil.copytree(ROOT / "vstd", cwd / "vstd")
+            (cwd / "payload.bin").write_bytes(PAYLOAD)
+
+            fs = cwd / "vstd/fs.volt"
+            text = fs.read_text(encoding="utf-8")
+            read = "                let n: i64 = read(fd, storage.data + storage.len, room)"
+            self.assertEqual(text.count(read), 1)
+            fs.write_text(text.replace(read, '                panic("unexpected read\\n")\n' + read),
+                          encoding="utf-8")
+            legacy = cwd / "vstd/fs_legacy.volt"
+            text = legacy.read_text(encoding="utf-8")
+            statx = "    mov rax, 332\n    syscall\n"
+            self.assertEqual(text.count(statx), 1)
+            for mask in (0x001, 0x200):
+                with self.subTest(mask=mask):
+                    # Keep the real type and size in the response, but omit
+                    # confirmation of one field. Neither raw value is enough.
+                    legacy.write_text(text.replace(statx, statx + f"    mov dword ptr [r8], {mask}\n"),
+                                      encoding="utf-8")
+                    self.run_fixture("vstd_fs_statx_mask", cwd,
+                                     f"err {errno.EOPNOTSUPP}\nfd {-errno.EBADF}", compiler=compiler)
+
+    def test_wait_readable_borrows_a_live_owned_fd(self):
+        with tempfile.TemporaryDirectory(dir=self.build, prefix="fd-ready-") as tmp:
+            cwd = Path(tmp)
+            os.mkfifo(cwd / "pipe")
+            # Keep a writer open so the reader sees a timeout rather than HUP
+            # after consuming the one byte. Linux permits opening a FIFO RDWR.
+            writer = os.open(cwd / "pipe", os.O_RDWR | os.O_NONBLOCK)
+            try:
+                os.write(writer, b"Q")
+                self.run_fixture("vstd_fs_wait_readable", cwd, f"1 1 81 0\nerr {errno.EINVAL}")
+            finally:
+                os.close(writer)
 
     def test_read_into_reads_binary_through_owned_fd(self):
         with tempfile.TemporaryDirectory(dir=self.build, prefix="read-into-") as tmp:

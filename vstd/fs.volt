@@ -29,7 +29,7 @@ unsafe native fn open_readonly(path: ptr<char>) -> i64:
 }
 
 # O_RDONLY | O_CLOEXEC | O_NONBLOCK: open(2) never waits on a FIFO without a
-# writer; the fstat on the returned descriptor decides whether read_all may
+# writer; statx on the returned descriptor decides whether read_all may
 # read it. O_NONBLOCK does not change read(2) on a regular file.
 unsafe native fn open_readonly_nonblock(path: ptr<char>) -> i64:
 {
@@ -58,9 +58,36 @@ pub fn open_owned(path: string) -> Result<OwnedFd, IoError>:
     if fd < 0: return Err(IoError((0 - fd) as i32))
     return Ok(OwnedFd(fd))
 
-# &handle is accepted only as an immediate argument to these readers.
-pub fn owned_fd_number(handle: ptr<OwnedFd>) -> i64:
-    unsafe: return handle.fd
+# The raw number is valid only while the descriptor remains owned and open.
+# The caller must not close it or use it after the owner closes it.
+pub unsafe fn owned_fd_number(handle: ptr<OwnedFd>) -> i64:
+    return handle.fd
+
+# Use a private pollfd binding so importing fs doesn't pull in event's flat namespace.
+struct ReadPollFd:
+    fd: i32
+    events: i16
+    revents: i16
+
+unsafe native fn poll_one(entry: ptr<ReadPollFd>, timeout_ms: i64) -> i64:
+{
+    mov rdx, rsi
+    mov esi, 1
+    mov eax, 7
+    syscall
+}
+
+# Wait for readability without exposing the descriptor number. Return poll's
+# revents mask (zero on timeout) or the positive errno wrapped as IoError.
+pub fn wait_readable(handle: ptr<OwnedFd>, timeout_ms: i64) -> Result<i64, IoError>:
+    if timeout_ms < -1 or timeout_ms > 2147483647: return Err(IoError(22))
+    let fd: i64
+    unsafe: fd = handle.fd
+    let entry: ReadPollFd = ReadPollFd(fd as i32, 1, 0)  # POLLIN
+    let status: i64
+    unsafe: status = poll_one(&entry, timeout_ms)
+    if status < 0: return Err(IoError((0 - status) as i32))
+    return Ok(entry.revents as i64)
 
 # One read(2) attempt from the owned descriptor into dst. Ok(n) counts bytes
 # and Ok(0) is end of file; an empty dst is rejected with Err(EINVAL) so Ok(0)
@@ -124,12 +151,12 @@ const ERR_NOT_REGULAR: i32 = 29
 
 # Read a whole regular file into a fresh OwnedBuffer, at most max_bytes bytes.
 # Never panics and never hangs on a FIFO: the file is opened with O_NONBLOCK,
-# then fstat on the OPEN descriptor (no stat→open race) rejects every
+# then statx on the open descriptor (no stat→open race) rejects every
 # non-regular file before any read — EISDIR for a directory, ESPIPE for a
-# FIFO, socket or device. The size and the limit come from the same fstat.
+# FIFO, socket or device. Missing statx type or size is EOPNOTSUPP.
 # A missing or unreadable file, an allocation failure (ENOMEM from mmap) and
 # a short I/O error all surface as Err with a positive errno. The limit is
-# enforced by the fstat before reading (EFBIG) and again while reading, so a
+# enforced by statx before reading (EFBIG) and again while reading, so a
 # file that grows past max_bytes mid-read is rejected too. An empty file and
 # a file of exactly max_bytes are valid; max_bytes <= 0 is Err(EINVAL).
 # On a mid-read error the descriptor is closed and the partial buffer freed
