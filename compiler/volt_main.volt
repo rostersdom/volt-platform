@@ -50,9 +50,16 @@ unsafe fn cc_lines(buf: ptr<ByteBuffer>, code: ptr<AsmObject>, lines: i64, listi
     for i in 0..cv_len(lines):
         let line: i64 = cv_at(lines, i)
         if cv_kind(line) == CV_TUPLE:
-            # Debug statement marker: record (source line, text offset), emit nothing.
-            if code != (0 as ptr<AsmObject>) and code.debug_marks != 0:
-                cv_push(code.debug_marks, cv_pair(cv_at(line, 1), cv_i(asm_offset(code))))
+            # Debug marker: record (payload, text offset), emit nothing.
+            # ".voltline" feeds the line program; other tags are scope events.
+            if code != (0 as ptr<AsmObject>):
+                let tag: i64 = cv_at(line, 0)
+                if cv_name(tag, ".voltline"):
+                    if code.debug_marks != 0:
+                        cv_push(code.debug_marks, cv_pair(cv_at(line, 1), cv_i(asm_offset(code))))
+                else:
+                    if code.debug_events != 0:
+                        cv_push(code.debug_events, cv_pair(tag, cv_pair(cv_at(line, 1), cv_i(asm_offset(code)))))
             continue
         if code != (0 as ptr<AsmObject>): x_encode(code, line)
         if listing:
@@ -82,7 +89,7 @@ unsafe fn cc_lower(state: i64, code: ptr<AsmObject>, listing: ptr<ByteBuffer>, k
     let startup: i64 = cv_text("VOLT_f_main")
     cc_function(emitter, code, listing, keep_listing, cv_getkey(state, "main_fn"), startup)
     if code != (0 as ptr<AsmObject>) and code.debug_functions != 0:
-        cc_startup_source(code, progs, startup)
+        cc_startup_source(code, progs, startup, cv_getkey(state, "main_fn"))
     let names: i64 = x_words("rodata data bss")
     for i in 0..3:
         let name: i64 = cv_at(names, i)
@@ -97,7 +104,7 @@ unsafe fn cc_lower(state: i64, code: ptr<AsmObject>, listing: ptr<ByteBuffer>, k
         cc_bytes_append(listing, stack as ptr<char>, str_len(stack))
     cc_error_file = 0
 
-unsafe fn cc_startup_source(code: ptr<AsmObject>, progs: i64, label: i64):
+unsafe fn cc_startup_source(code: ptr<AsmObject>, progs: i64, label: i64, main_fn: i64):
     # Anchor startup to the first entry-file statement, not to a synthetic line 1.
     # The wrapper starts before any implicit module initialization calls.
     for i in 0..cv_len(progs):
@@ -107,7 +114,7 @@ unsafe fn cc_startup_source(code: ptr<AsmObject>, progs: i64, label: i64):
         for j in 0..cv_len(statements):
             let stmt: i64 = cv_at(statements, j)
             if cv_classes(stmt, "ConstStmt"): continue
-            asm_source_function(code, label, cv_getkey(prog, "file"), cv_index(cv_getkey(stmt, "line")))
+            asm_source_function(code, label, cv_getkey(prog, "file"), cv_index(cv_getkey(stmt, "line")), cv_text("main"), main_fn)
             break
         return
 
@@ -124,7 +131,12 @@ unsafe fn cc_function(emitter: i64, code: ptr<AsmObject>, listing: ptr<ByteBuffe
     if code != (0 as ptr<AsmObject>) and code.debug_functions != 0 and not cv_name(name, "VOLT_f_main"):
         let label: i64 = name
         if label == 0: label = cc_function_label(cv_getkey(target, "name"), file)
-        asm_source_function(code, label, file, line)
+        let title: i64 = cv_get(target, cv_text("name"), 0)
+        if title == 0: title = cv_get(target, cv_text("mangled_name"), 0)
+        # Native functions keep arguments in registers; their slots are never saved.
+        let fn_def: i64 = target
+        if cv_getkey(target, "native") != 0: fn_def = 0
+        asm_source_function(code, label, file, line, title, fn_def)
     cc_error_file = 0
 
 unsafe fn cc_dump(node: i64, depth: i64):
@@ -193,6 +205,7 @@ unsafe fn cc_build(opts: ptr<CCOptions>) -> i64:
     if opts.debug:
         obj.debug_functions = cv_list()
         obj.debug_marks = cv_list()
+        obj.debug_events = cv_list()
     cc_lower(state, &obj, &listing, opts.listing != 0)
     cc_runtime(&obj)
     let output: ByteBuffer

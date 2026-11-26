@@ -214,8 +214,127 @@ class CompilerDebug(unittest.TestCase):
                                    ("step_dependency.volt", "2"),
                                    ("step_dependency.volt", "3"),
                                    ("step_entry.volt", "5"),
-                                   ("step_entry.volt", "6"),
-                                   ("step_entry.volt", "7")], result.stdout)
+                                    ("step_entry.volt", "6"),
+                                    ("step_entry.volt", "7")], result.stdout)
+
+    def test_gdb_shows_args_locals_and_nested_scopes(self):
+        gdb = self.tool("gdb")
+        source = self.source("fn measure(a: i64, scale: i64) -> i64:\n"
+                             "    let total: i64 = a + scale\n"
+                             "    let big: bool = total > 10\n"
+                             "    if big:\n"
+                             "        let total: i64 = total * 2\n"
+                             "        let mark: char = 'H'\n"
+                             "        total = total + 1\n"
+                             "    let ratio: f64 = 1.5\n"
+                             "    return total\n"
+                             "\n"
+                             "fn main() -> i64:\n"
+                             "    let answer: i64 = measure(4, 8)\n"
+                             "    let tiny: u8 = 200\n"
+                             "    let name: string = \"volt\"\n"
+                             "    let pi2: f64 = 3.25\n"
+                             "    print(answer, tiny, name, pi2)\n"
+                             "    return 0\n", "vars_entry.volt")
+        debug = self.build(source, "-g")
+        commands = ["break VOLT_f_vars_entry_measure", "run", "info args", "info locals"]
+        commands += ["next", "info locals"] * 11
+        args = [gdb, "-nx", "-nh", "-q", "-batch", "-iex", "set auto-load off"]
+        for command in commands:
+            args += ["-ex", command]
+        result = self.invoke(*args, debug)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        stops = list(re.finditer(r"(?m)^(\d+)\t ", result.stdout))
+        self.assertEqual([int(stop[1]) for stop in stops],
+                         [2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 16], result.stdout)
+        segments = []
+        for index, stop in enumerate(stops):
+            end = stops[index + 1].start() if index + 1 < len(stops) else len(result.stdout)
+            segments.append(result.stdout[stop.start():end])
+        # info args at the entry breakpoint: parameter names and values.
+        self.assertIn("a = 4", segments[0])
+        self.assertIn("scale = 8", segments[0])
+        self.assertNotIn("total =", segments[0])
+        # Locals initialized so far, with DWARF base types driving the format.
+        self.assertIn("total = 12", segments[1])
+        self.assertNotIn("big =", segments[1])
+        self.assertIn("big = true", segments[2])
+        # At `let total = total * 2`, the right-hand side still sees the outer total.
+        self.assertRegex(segments[3], r"(?m)^total = 12$")
+        self.assertNotIn("<shadowed>", segments[3])
+        # Inside the nested block the inner binding shadows the outer one.
+        self.assertIn("total = 24", segments[4])
+        self.assertIn("mark = 72 'H'", segments[5])
+        self.assertIn("total = 24", segments[5])
+        # After the block the outer variable is visible again with its value.
+        self.assertIn("total = 12", segments[6])
+        self.assertNotIn("total = 24", segments[6])
+        self.assertIn("ratio = 1.5", segments[7])
+        # Top-level statements are locals of the startup wrapper.
+        self.assertIn("answer = 12", segments[8])
+        self.assertIn("tiny = 200", segments[9])
+        self.assertRegex(segments[10], r'name = 0x[0-9a-f]+ "volt"')
+        self.assertIn("pi2 = 3.25", segments[11])
+
+    def test_gdb_shows_loop_and_match_bindings_in_their_bodies(self):
+        gdb = self.tool("gdb")
+        source = self.source("fn main() -> i64:\n"
+                             "    let subject: Option<i64> = Some(7)\n"
+                             "    for j in 0..1:\n"
+                             "        match subject:\n"
+                             "            Some(payload): print(j, payload)\n"
+                             "            None: print(0)\n"
+                             "    return 0\n", "bindings.volt")
+        debug = self.build(source, "-g")
+        result = self.invoke(gdb, "-nx", "-nh", "-q", "-batch", "-iex", "set auto-load off",
+                             "-ex", "break bindings.volt:5", "-ex", "break bindings.volt:7",
+                             "-ex", "run", "-ex", "info locals", "-ex", "continue",
+                             "-ex", "info locals", debug)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        body, after = result.stdout.split("Breakpoint 2,", 1)
+        self.assertIn("j = 0", body)
+        self.assertIn("payload = 7", body)
+        self.assertNotIn("j =", after)
+        self.assertNotIn("payload =", after)
+
+    def test_debug_allows_generic_pointee_without_a_layout(self):
+        source = self.source("struct Box<T>:\n"
+                             "    value: T\n"
+                             "unsafe fn accept(value: ptr<Box<i64>>):\n"
+                             "    print(value == (0 as ptr<Box<i64>>))\n")
+        self.build(source, "-g")
+
+    def test_gdb_uses_outer_scope_in_defer_on_nested_return(self):
+        gdb = self.tool("gdb")
+        source = self.source("fn calculate() -> i64:\n"
+                             "    let value = 11\n"
+                             "    defer print(value)\n"
+                             "    if true:\n"
+                             "        let value = 22\n"
+                             "        return value\n"
+                             "    return 0\n"
+                             "print(calculate())\n", "defer_scope.volt")
+        debug = self.build(source, "-g")
+        result = self.invoke(gdb, "-nx", "-nh", "-q", "-batch", "-iex", "set auto-load off",
+                             "-ex", "break defer_scope.volt:3", "-ex", "run",
+                             "-ex", "info locals", debug)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"(?m)^value = 11(?:\s|$)")
+        self.assertNotIn("value = 22", result.stdout)
+
+    def test_gdb_does_not_show_outer_value_for_unsupported_inner_type(self):
+        gdb = self.tool("gdb")
+        source = self.source("fn main() -> i64:\n"
+                             "    let value: i64 = 11\n"
+                             "    if true:\n"
+                             "        let value: [2]i64 = [22, 33]\n"
+                             "        print(len(value))\n"
+                             "    return value\n", "array_scope.volt")
+        debug = self.build(source, "-g")
+        result = self.invoke(gdb, "-nx", "-nh", "-q", "-batch", "-iex", "set auto-load off",
+                             "-ex", "break array_scope.volt:5", "-ex", "run", "-ex", "print value", debug)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"(?m)^\$1 = <(?:optimized out|unavailable)>")
 
 
 if __name__ == "__main__":

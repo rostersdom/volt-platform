@@ -2404,12 +2404,18 @@ unsafe fn cce_begin_stmt(v_self: i64) -> i64:
     cv_field(v_self, "nt", cv_getkey(v_self, "for_floor"))
     return 0
 
-unsafe fn cce_emit_stmts(v_self: i64, v_stmts: i64) -> i64:
+unsafe fn cce_debug_event(v_self: i64, tag: string, payload: i64):
+    if cv_getkey(v_self, "dbg_lines") != 0:
+        cv_push(cv_getkey(v_self, "text"), cv_pair(cv_text(tag), payload))
+
+unsafe fn cce_emit_stmts(v_self: i64, v_stmts: i64, binding: i64) -> i64:
     let v_frame: i64 = 0
     let v_st: i64 = 0
     let v_flag: i64 = 0
     let items_1: i64 = cv_vector(CV_LIST)
     v_frame = items_1
+    cce_debug_event(v_self, ".voltblk", 0)
+    if binding != 0: cce_debug_event(v_self, ".voltvar", binding)
     let scopes: i64 = cv_getkey(cv_getkey(v_self, "cur"), "owner_scopes")
     let owners: i64 = cv_get(scopes, cv_i(v_stmts), 0)
     cv_push(cv_getkey(v_self, "defer_frames"), cv_pair(v_frame, owners))
@@ -2433,6 +2439,7 @@ unsafe fn cce_emit_stmts(v_self: i64, v_stmts: i64) -> i64:
         v_st = cv_at(seq_6, index_5)
         if cv_classes(v_st, "DeferStmt"):
             cv_push(v_frame, v_st)
+            cce_debug_event(v_self, ".voltdefer", v_st)
             v_flag = cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_st, "flag_slot"))
             let pieces_7: i64 = cv_list()
             cv_push(pieces_7, cv_text("mov qword ptr [rbp"))
@@ -2443,6 +2450,7 @@ unsafe fn cce_emit_stmts(v_self: i64, v_stmts: i64) -> i64:
             cce_emit_stmt(v_self, v_st)
     cce_emit_defer_frame(v_self, v_frame)
     cce_drop_owners(v_self, owners)
+    cce_debug_event(v_self, ".voltend", 0)
     cv_pop(cv_getkey(v_self, "defer_frames"))
     return 0
 
@@ -2510,7 +2518,9 @@ unsafe fn cce_emit_defer_frame(v_self: i64, v_frame: i64) -> i64:
         cv_push(pieces_4, cv_format(cce_soff(v_self, v_flag), "+d"))
         cv_push(pieces_4, cv_text("], 0"))
         cce_e(v_self, cv_join(cv_text(""), pieces_4))
+        cce_debug_event(v_self, ".voltcleanup", v_st)
         cce_emit_stmt(v_self, cv_getkey(v_st, "action"))
+        cce_debug_event(v_self, ".voltresume", 0)
         cce_label(v_self, v_skip, 0)
     return 0
 
@@ -2542,6 +2552,7 @@ unsafe fn cce_emit_stmt(v_self: i64, v_st: i64) -> i64:
         let slot: i64 = cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_st, "slot"))
         cce_owner_flag(v_self, cv_getkey(cv_getkey(v_st, "init"), "owner_transfer"), 0)
         cce_owner_flag(v_self, slot, 1)
+        cce_debug_event(v_self, ".voltvar", slot)
     else:
         if cv_classes(v_st, "AssignStmt"):
             cce_st_assign(v_self, v_st)
@@ -2582,7 +2593,7 @@ unsafe fn cce_emit_stmt(v_self: i64, v_st: i64) -> i64:
                                                 0
                                             else:
                                                 if cv_classes(v_st, "UnsafeStmt"):
-                                                    cce_emit_stmts(v_self, cv_getkey(v_st, "body"))
+                                                    cce_emit_stmts(v_self, cv_getkey(v_st, "body"), 0)
                                                 else:
                                                     cc_error(cv_add(cv_text("кодоген: неизвестный стейтмент "), cv_typename(v_st)), cv_get(cv_getkey(v_self, "cur"), cv_text("file"), 0), cv_getkey(v_st, "line"))
                                                     return 0
@@ -2625,7 +2636,9 @@ unsafe fn cce_emit_match(v_self: i64, v_st: i64) -> i64:
                 cce_e(v_self, cv_cat(cv_text("mov rdx, "), cv_format(v_tag, "")))
                 cce_e(v_self, cv_text("cmp rax, rdx"))
             cce_e(v_self, cv_cat(cv_text("jne "), cv_format(v_nxt, "")))
+        let bound: i64 = 0
         if cv_truth(cv_getkey(v_arm, "binding")):
+            bound = cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_arm, "binding_slot"))
             v_off = cv_getkey(v_t, "payload_off")
             let pieces_7: i64 = cv_list()
             cv_push(pieces_7, cv_text("mov rsi, qword ptr [rbp"))
@@ -2635,16 +2648,16 @@ unsafe fn cce_emit_match(v_self: i64, v_st: i64) -> i64:
             cce_e(v_self, cv_cat(cv_text("add rsi, "), cv_format(v_off, "")))
             let pieces_8: i64 = cv_list()
             cv_push(pieces_8, cv_text("lea rdi, [rbp"))
-            cv_push(pieces_8, cv_format(cce_soff(v_self, cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_arm, "binding_slot"))), "+d"))
+            cv_push(pieces_8, cv_format(cce_soff(v_self, bound), "+d"))
             cv_push(pieces_8, cv_text("]"))
             cce_e(v_self, cv_join(cv_text(""), pieces_8))
-            cce_copy_bytes(v_self, cc_type_size(cv_getkey(cv_subscript(cv_getkey(v_self, "slots"), cv_getkey(v_arm, "binding_slot")), "typ")))
+            cce_copy_bytes(v_self, cc_type_size(cv_getkey(bound, "typ")))
         let discard: i64 = cv_getkey(v_arm, "owner_discard")
         if discard != 0:
             cce_e(v_self, cv_mod(cv_text("mov rax, qword ptr [rbp%+d]"), cce_toff(v_self, v_source)))
             cce_copy_from_rax(v_self, cce_soff(v_self, discard), cc_type_size(v_t))
         cce_owner_flag(v_self, cv_getkey(value, "owner_transfer"), 0)
-        cce_emit_stmts(v_self, cv_getkey(v_arm, "body"))
+        cce_emit_stmts(v_self, cv_getkey(v_arm, "body"), bound)
         cce_e(v_self, cv_cat(cv_text("jmp "), cv_format(v_done, "")))
         cce_label(v_self, v_nxt, 0)
     cce_label(v_self, v_done, 0)
@@ -3123,11 +3136,11 @@ unsafe fn cce_st_if(v_self: i64, v_st: i64) -> i64:
         cce_expr_truthy(v_self, v_cond)
         cce_e(v_self, cv_text("test rax, rax"))
         cce_e(v_self, cv_cat(cv_text("jz "), cv_format(v_lnext, "")))
-        cce_emit_stmts(v_self, v_body)
+        cce_emit_stmts(v_self, v_body, 0)
         cce_e(v_self, cv_cat(cv_text("jmp "), cv_format(v_lend, "")))
         cce_label(v_self, v_lnext, 0)
     if cv_truth(cv_getkey(v_st, "els")):
-        cce_emit_stmts(v_self, cv_getkey(v_st, "els"))
+        cce_emit_stmts(v_self, cv_getkey(v_st, "els"), 0)
     cce_label(v_self, v_lend, 0)
     return 0
 
@@ -3141,7 +3154,7 @@ unsafe fn cce_st_while(v_self: i64, v_st: i64) -> i64:
     cce_e(v_self, cv_text("test rax, rax"))
     cce_e(v_self, cv_cat(cv_text("jz "), cv_format(v_lend, "")))
     cv_push(cv_getkey(v_self, "loop"), cv_pair(v_lend, v_lhead))
-    cce_emit_stmts(v_self, cv_getkey(v_st, "body"))
+    cce_emit_stmts(v_self, cv_getkey(v_st, "body"), 0)
     cv_pop(cv_getkey(v_self, "loop"))
     cce_e(v_self, cv_cat(cv_text("jmp "), cv_format(v_lhead, "")))
     cce_label(v_self, v_lend, 0)
@@ -3196,7 +3209,7 @@ unsafe fn cce_st_for(v_self: i64, v_st: i64) -> i64:
     v_old_floor = cv_getkey(v_self, "for_floor")
     cv_field(v_self, "for_floor", cv_add(v_d, 19))
     cv_push(cv_getkey(v_self, "loop"), cv_pair(v_lend, v_linc))
-    cce_emit_stmts(v_self, cv_getkey(v_st, "body"))
+    cce_emit_stmts(v_self, cv_getkey(v_st, "body"), v_i_slot)
     cv_pop(cv_getkey(v_self, "loop"))
     cv_field(v_self, "for_floor", v_old_floor)
     cce_label(v_self, v_linc, 0)
@@ -3411,7 +3424,7 @@ unsafe fn cce_emit_fn(v_self: i64, v_fn: i64, v_name_override: i64) -> i64:
             cce_e(v_self, cv_text("dec rcx"))
             cce_e(v_self, cv_cat(cv_text("jnz "), cv_format(v_Lc, "")))
         cv_field(v_self, "nt", 3)
-        cce_emit_stmts(v_self, cv_getkey(v_fn, "body"))
+        cce_emit_stmts(v_self, cv_getkey(v_fn, "body"), 0)
     v_frame = cc_base_align(cv_add(cv_add(259, cv_getkey(v_self, "lsize")), cv_mul(131, cv_max(cv_getkey(v_self, "ntpeak"), 11))), 131)
     if (cv_less(17179869179, v_frame)):
         cc_error(cv_text("размер кадра стека превышает лимит x86-64"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
