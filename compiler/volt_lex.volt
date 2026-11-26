@@ -135,6 +135,8 @@ unsafe fn cc_lex(source: i64, file: i64) -> i64:
                     cc_error_at(cv_text("некорректное число: точка допустима только в десятичном литерале"), file, cv_i(line), pos - begin + 1)
             else:
                 while cc_lex_digit(p[pos]) or p[pos] == '_': pos += 1
+                if p[pos] == '.' and p[pos + 1] == '_':
+                    cc_error_at(cv_text("некорректное число: _ допустим только между цифрами"), file, cv_i(line), pos - begin + 2)
                 if p[pos] == '.' and cc_lex_digit(p[pos + 1]):
                     floating = true
                     pos += 1
@@ -143,8 +145,16 @@ unsafe fn cc_lex(source: i64, file: i64) -> i64:
                     floating = true
                     pos += 1
                     if p[pos] == '+' or p[pos] == '-': pos += 1
+                    if p[pos] == '_':
+                        cc_error_at(cv_text("некорректное число: _ допустим только между цифрами"), file, cv_i(line), pos - begin + 1)
                     if not cc_lex_digit(p[pos]): cc_error_at(cv_text("в экспоненте ожидаются цифры"), file, cv_i(line), pos - begin + 1)
-                    while cc_lex_digit(p[pos]): pos += 1
+                    while cc_lex_digit(p[pos]) or p[pos] == '_': pos += 1
+            for i in start..pos:
+                if p[i] == '_':
+                    let before: i64 = cv_digit(p[i - 1])
+                    let after: i64 = cv_digit(p[i + 1])
+                    if i + 1 == pos or before < 0 or before >= base or after < 0 or after >= base:
+                        cc_error_at(cv_text("некорректное число: _ допустим только между цифрами"), file, cv_i(line), i - begin + 1)
             if base != 10 and cc_lex_digit(p[pos]):
                 cc_error_at(cv_text("некорректное число: цифра вне основания литерала"), file, cv_i(line), pos - begin + 1)
             if cc_lex_letter(p[pos]):

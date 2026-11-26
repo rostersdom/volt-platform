@@ -1711,7 +1711,28 @@ print(run())
         result = self.compile_run('print(0x1f, 0b101, 1_000_000)\n')
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "31 5 1000000\n", ""))
 
-    def test_deep_expressions_fail_cleanly_instead_of_crashing(self):        # 5000 nested parentheses used to overflow the parser stack (segfault).
+    def test_number_literal_underscore_only_between_digits(self):
+        # The lexer used to swallow '_' anywhere inside a number: 1__2,
+        # 0x_1 and 42_ lexed without any diagnostic.
+        message = "некорректное число: _ допустим только между цифрами"
+        for literal in ("1__2", "42_", "0x_1", "0b_1", "1_.5", "1._5", "1e_5", "1e5_"):
+            with self.subTest(literal=literal):
+                result = self.compile_run(f"print({literal})\n")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertIn(f"байтовая колонка {literal.index('_') + 7}", result.stderr)
+        result = self.compile_run('print(1_000, 0xff_ff, 0b1010_1010)\n')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "1000 65535 170\n", ""))
+        result = self.compile_run('print(3.14_15, 1_000.000_1, 1e1_0)\n')
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (0, "3.141500 1000.000100 10000000000.000000\n", ""))
+        # Ranges and a leading-underscore identifier must keep working.
+        result = self.compile_run('let _total = 0\nfor i in 0..10:\n    _total += i\n'
+                                  'for j in 0_0..=1_0:\n    _total += j\nprint(_total)\n')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "100\n", ""))
+
+    def test_deep_expressions_fail_cleanly_instead_of_crashing(self):
+        # 5000 nested parentheses used to overflow the parser stack (segfault).
         parens = 'print(' + '(' * 5000 + '1' + ')' * 5000 + ')\n'
         self.assert_compile_error(parens, "слишком глубокая вложенность выражения")
         # A flat 6000-term chain used to overflow the semantic stack (segfault)
