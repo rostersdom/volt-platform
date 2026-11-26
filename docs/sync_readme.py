@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Embed docs/language.md in the Russian README without breaking relative links."""
+"""Embed docs/language.md in the Russian README without breaking relative links.
+
+Documentation policy for the three READMEs (single approach):
+
+- docs/language.md is the only canonical, hand-maintained language
+  specification. READMEs never carry a manually edited copy of it.
+- README.ru.md embeds the spec automatically between the
+  "BEGIN/END VOLT SPEC" markers via this script (`python3 docs/sync_readme.py`
+  after editing docs/language.md; `--check` verifies without writing).
+- README.md (English) and README.es.md (Spanish) keep only the quick start,
+  a brief feature overview and links into docs/*.md; their previous full
+  hand-translated copies of the spec were removed because they drifted out
+  of sync.
+"""
 
 import argparse
 from pathlib import Path

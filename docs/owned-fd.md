@@ -18,15 +18,20 @@ reader-функции и функцию drop. Для `OwnedFd` drop — это
 ```volt
 use fs
 
-fn first_descriptor(path: string) -> Result<i64, fs.IoError>:
+fn first_byte(path: string) -> Result<i64, fs.IoError>:
     let handle = fs.open_owned(path)?
     defer print("closing")
-    return Ok(fs.owned_fd_number(&handle)) # close(2) — после defer, ровно один раз
+    let data: [1]u8
+    let n = fs.read_into(&handle, mut data[0..1])?
+    if n == 0: return Ok(-1) # EOF
+    return Ok(data[0] as i64) # close(2) — после defer, ровно один раз
 ```
 
-`fs.owned_fd_number(&handle)` возвращает номер живого дескриптора, ничего не
-перенося. Адрес нельзя сохранить или передать другой функции; отложенное
-чтение через `defer` заимствует владельца до конца блока и запрещает перенос.
+`fs.owned_fd_number(&handle)` доступна только в `unsafe`: номер не продлевает
+жизнь дескриптора. Его нельзя закрывать вручную или использовать после закрытия
+владельцем: ядро может выдать тот же номер другому файлу. Сам адрес владельца
+нельзя сохранить или передать другой функции; отложенное чтение через `defer`
+заимствует владельца до конца блока и запрещает перенос.
 
 `fs.read_into(&handle, dst)` — reader с сигнатурой
 `(ptr<OwnedFd>, []mut u8) -> Result<i64, fs.IoError>`: одна попытка `read(2)`
@@ -34,6 +39,11 @@ fn first_descriptor(path: string) -> Result<i64, fs.IoError>:
 `Ok(0)` — конец файла; пустой срез отклоняется с `Err(EINVAL)`, чтобы `Ok(0)`
 не означал пустой буфер. Прочие положительные `errno` (включая `EINTR`)
 возвращаются как есть.
+
+`fs.wait_readable(&handle, timeout_ms) -> Result<i64, fs.IoError>` заимствует
+дескриптор на время ожидания. `Ok` содержит маску событий `poll` (например,
+`POLLIN` из `use event`), либо ноль при тайм-ауте. Допустимы миллисекунды
+`-1..=2147483647`; `-1` означает ожидание без срока. Сырой номер не нужен.
 
 `fs.close_owned(handle)` закрывает дескриптор явно и ПОТРЕБЛЯЕТ владельца:
 аргумент переносится, поэтому старое имя после вызова не компилируется, а

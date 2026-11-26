@@ -46,11 +46,12 @@ print(store.number(fd))
 обязан закрыть его ровно один раз через `unsafe fs.close_file` (внутри блока
 `unsafe:`) и не использовать копии после закрытия. Владеющая альтернатива —
 `fs.open_owned` с автоматическим `close(2)`: `fs.read_into(&handle, dst)`
-читает в `[]mut u8`, а `fs.close_owned(handle)` закрывает явно, потребляя
-владельца (см. [owned-fd.md](owned-fd.md)).
+читает в `[]mut u8`, `fs.wait_readable(&handle, timeout_ms)` ждёт готовности,
+а `fs.close_owned(handle)` закрывает явно, потребляя владельца (см.
+[owned-fd.md](owned-fd.md)).
 `fs.read_all(path, max_bytes)` читает обычный файл целиком, но не более
 `max_bytes` байт, и возвращает некопируемый `Result<OwnedBuffer, fs.IoError>`
 — буфер переносится через `match` или `?` и освобождается автоматически (см.
 [owned-buffer.md](owned-buffer.md)). Открытие идёт с `O_NONBLOCK`, поэтому
-FIFO без писателя не блокирует вызов: `fstat` по открытому дескриптору
+FIFO без писателя не блокирует вызов: `statx` по открытому дескриптору
 отклоняет каталог с `EISDIR` и любой другой не-обычный файл с `ESPIPE`.
