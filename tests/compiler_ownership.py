@@ -295,11 +295,18 @@ fn disjoint(move: bool, input: OwnedBuffer):
         return
     print(owned_buffer_len(&input))
 
+fn abort_or_read(abort: bool, input: OwnedBuffer) -> i64:
+    if abort:
+        consume(input)
+        panic("unreachable in this test")
+    return owned_buffer_len(&input)
+
 may_move(true, owned_buffer_new("a"))
 may_move(false, owned_buffer_new("b"))
 disjoint(true, owned_buffer_new("c"))
 disjoint(false, owned_buffer_new("d"))
-''', "drop a\ndone\ndone\ndrop b\ndrop c\n1\ndrop d\n")
+print(abort_or_read(false, owned_buffer_new("ef")))
+''', "drop a\ndone\ndone\ndrop b\ndrop c\n1\ndrop d\ndrop e\n2\n")
 
     def test_argument_move_is_committed_only_on_call(self):
         self.check_run('''fn fail() -> Result<i64, i64>:
@@ -322,6 +329,21 @@ match early():
         setup = 'let buffer = owned_buffer_new("a")\ndefer print(owned_buffer_len(&buffer))\n'
         self.check_run(setup + 'panic("stop\\n")\n', "", 1, "stop\n")
         self.check_run(setup + 'exit(7)\n', "", 7)
+
+    def test_moves_in_a_terminating_loop_or_skipped_operand_do_not_reach_later_use(self):
+        self.check_run('''fn consume(input: OwnedBuffer) -> bool:
+    return true
+
+fn probe(flag: bool):
+    let input = owned_buffer_new("a")
+    if flag:
+        consume(input)
+        while true: exit(7)
+    print(false and consume(input), true or consume(input))
+    print(owned_buffer_len(&input))
+
+probe(false)
+''', "false true\n1\ndrop a\n")
 
     def test_string_repetition_reads_owner_before_right_operand_moves_it(self):
         self.check_run('''fn text(input: OwnedBuffer) -> string:
@@ -395,7 +417,7 @@ let item = owned_buffer_new("a")
         for source, expected in (
             ("let moved = item\nconsume(item)", "после переноса"),
             ("if true: consume(item)\nprint(owned_buffer_len(&item))", "после переноса"),
-            ("let choice = false and choose(item)\nprint(owned_buffer_len(&item))", "после переноса"),
+            ("let condition = false\nlet choice = condition and choose(item)\nprint(owned_buffer_len(&item))", "после переноса"),
             ("for i in 0..3:\n    consume(item)\n    continue", "следующей итерации"),
             ("while true:\n    consume(item)\n    break\nconsume(item)", "после переноса"),
             ("defer print(owned_buffer_len(&item))\nconsume(item)", "пока он заимствован"),

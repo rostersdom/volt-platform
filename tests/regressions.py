@@ -193,6 +193,69 @@ values[0] = 9
     def test_string_literals_reject_embedded_nul(self):
         self.assert_compile_error('print("a\\0b")\n', "строковый литерал не может содержать NUL")
 
+    def test_semantic_error_reports_byte_column(self):
+        result = self.compile_run("fn main() -> i64:\n    return missing_name\n")
+        self.assertEqual(result.returncode, 1)
+        lines = result.stderr.splitlines()
+        self.assertIn("неизвестное имя 'missing_name'", lines[0])
+        self.assertEqual(lines[1], "  |     return missing_name")
+        self.assertEqual(lines[1].index("missing_name"), lines[2].index("^"))
+        self.assertTrue(lines[2].endswith("байтовая колонка 12"))
+
+        call = 'take("ёж", 17)'
+        result = self.compile_run('fn take(text: string, flag: bool):\n    return\n' + call + '\n')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("аргумент 'flag': i64 вместо bool", result.stderr)
+        column = len(call[:call.index("17")].encode("utf-8")) + 1
+        self.assertIn(f"байтовая колонка {column}", result.stderr)
+
+    def test_use_after_move_reports_use_and_move_locations(self):
+        source = '''use owned_buffer
+
+fn consume(input: OwnedBuffer):
+    owned_buffer_new("x")
+
+let buffer = owned_buffer_new("a")
+let moved = buffer
+consume(buffer)
+'''
+        result = self.compile_run(source)
+        self.assertEqual(result.returncode, 1)
+        lines = result.stderr.splitlines()
+        # Первое место — использование, второе (примечание) — первый перенос.
+        self.assertIn("использован после переноса", lines[0])
+        self.assertEqual(lines[1], "  | consume(buffer)")
+        self.assertEqual(lines[1].index("buffer"), lines[2].index("^"))
+        self.assertTrue(lines[2].endswith("байтовая колонка 9"))
+        self.assertIn("примечание: перенесён здесь", lines[3])
+        self.assertEqual(lines[4], "  | let moved = buffer")
+        self.assertEqual(lines[4].index("buffer"), lines[5].index("^"))
+        self.assertTrue(lines[5].endswith("байтовая колонка 13"))
+
+    def test_move_note_points_to_a_branch_that_reaches_the_use(self):
+        source = '''use owned_buffer
+
+fn consume(input: OwnedBuffer):
+    return
+
+fn run(flag: bool):
+    let buffer = owned_buffer_new("a")
+    if flag:
+        consume(buffer)
+        return
+    else:
+        let moved = buffer
+    consume(buffer)
+
+run(false)
+'''
+        for program in (source, source.replace("if flag:", "if false:").replace("        return\n", "        print(0)\n")):
+            with self.subTest(program=program):
+                result = self.compile_run(program)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(":13: ошибка: OwnedBuffer использован после переноса", result.stderr)
+                self.assertIn(":12: примечание: перенесён здесь", result.stderr)
+
     def compile_run(self, source, modules=None, timeout=15):
         with tempfile.TemporaryDirectory(prefix="volt-test-") as tmp:
             for name, text in (modules or {}).items():
@@ -1701,6 +1764,34 @@ print(run())
         self.assert_compile_error('let x: i8 = -129\n', "целочисленный литерал вне диапазона i8")
         result = self.compile_run('let a: u8 = 255\nlet b: i8 = -128\nprint(a, b)\n')
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "255 -128\n", ""))
+
+    def test_diverging_panic_ends_the_return_path(self):
+        result = self.compile_run('''fn unwrap_or_die(r: Result<i64, i64>) -> i64:
+    match r:
+        Ok(v): return v
+        Err(e): panic("died\\n")
+print(unwrap_or_die(Ok(41)))
+''')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "41\n", ""))
+        result = self.compile_run('''fn check(x: i64) -> i64:
+    if x < 0:
+        panic("negative\\n")
+    else:
+        return x
+print(check(5))
+''')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "5\n", ""))
+        for call, status, stderr in [('panic("stopped\\n")', 1, "stopped\n"), ('exit(7)', 7, "")]:
+            result = self.compile_run(f"fn stop() -> i64:\n    {call}\nstop()\n")
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (status, "", stderr))
+        for body in ("    if true: exit(7)\n",
+                     "    while true:\n        if false: break\n        exit(7)\n"):
+            result = self.compile_run(f"fn stop() -> i64:\n{body}stop()\n")
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (7, "", ""))
+        for body in ('    if x < 0: panic("negative")\n',
+                     '    while true:\n        if x < 0: break\n        panic("unexpected")\n'):
+            self.assert_compile_error(f"fn check(x: i64) -> i64:\n{body}check(-1)\n",
+                                      "не завершается return")
 
     def test_malformed_number_literals_are_lexer_errors(self):
         # 0b12 / 0x1g / 123abc used to split into two tokens and fail with an

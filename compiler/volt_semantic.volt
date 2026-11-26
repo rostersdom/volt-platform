@@ -43,6 +43,11 @@ unsafe fn ccs_new(v_progs: i64, v_entry_name: i64) -> i64:
     cv_field(v_self, "lbl_prefix", cv_text("VOLT_L"))
     return v_self
 
+# Semantic diagnostic anchored at an AST node: shows the byte column the
+# parser recorded on the node, or falls back to the line-only format.
+unsafe fn ccs_error(msg: i64, file: i64, node: i64):
+    cc_error_at(msg, file, cv_getkey(node, "line"), cc_node_column(node))
+
 unsafe fn ccs_register_namespaces(state: i64):
     let programs: i64 = cv_getkey(state, "progs")
     for i in 0..cv_len(programs):
@@ -179,7 +184,7 @@ unsafe fn ccs_resolve_type(v_self: i64, v_t: i64, v_indirect: i64) -> i64:
         if (cv_contains(cv_getkey(v_self, "enums"), v_n)):
             return cv_subscript(cv_getkey(v_self, "enums"), v_n)
         if ((cv_equal(v_n, cv_text("Option")) or cv_equal(v_n, cv_text("Result")))):
-            cc_error(cv_cat(cv_format(v_n, ""), cv_text(" должен быть параметризован типом payload")), v_file, cv_getkey(v_t, "line"))
+            ccs_error(cv_cat(cv_format(v_n, ""), cv_text(" должен быть параметризован типом payload")), v_file, v_t)
             return 0
         if (cv_contains(cv_getkey(v_self, "struct_defs"), v_n)):
             let items_1: i64 = cv_vector(CV_TUPLE)
@@ -189,7 +194,7 @@ unsafe fn ccs_resolve_type(v_self: i64, v_t: i64, v_indirect: i64) -> i64:
             choice_2 = cv_getkey(v_t, "file")
         else:
             choice_2 = 0
-        cc_error(cv_add(cv_text("неизвестный тип "), v_n), choice_2, cv_getkey(v_t, "line"))
+        ccs_error(cv_add(cv_text("неизвестный тип "), v_n), choice_2, v_t)
         return 0
     if (cv_equal(cv_getkey(v_t, "kind"), cv_text("struct_type"))):
         let unpack_3: i64 = cv_getkey(v_t, "a")
@@ -225,12 +230,12 @@ unsafe fn ccs_resolve_type(v_self: i64, v_t: i64, v_indirect: i64) -> i64:
     if (cv_equal(cv_getkey(v_t, "kind"), cv_text("ptr"))):
         v_elem = ccs_resolve_type(v_self, cv_subscript(cv_getkey(v_t, "a"), 3), CV_TRUE)
         if cc_is_owned(v_elem) and not cv_equal(v_file, cc_owned_home(v_elem)):
-            cc_error(cv_cat(cv_text("указатель на "), cv_cat(cc_owner_title(v_elem), cv_text(" нельзя объявить или привести к нему"))), v_file, cv_getkey(v_t, "line"))
+            ccs_error(cv_cat(cv_text("указатель на "), cv_cat(cc_owner_title(v_elem), cv_text(" нельзя объявить или привести к нему"))), v_file, v_t)
         if cc_is_mut_slice(v_elem):
-            cc_error(cv_text("ptr не может ссылаться на дескриптор изменяемого slice"), v_file, cv_getkey(v_t, "line"))
+            ccs_error(cv_text("ptr не может ссылаться на дескриптор изменяемого slice"), v_file, v_t)
             return 0
         if cv_truth(cc_contains_tagged_type(v_elem)):
-            cc_error(cv_text("ptr не может скрывать Option/Result или enum с payload"), v_file, cv_getkey(v_t, "line"))
+            ccs_error(cv_text("ptr не может скрывать Option/Result или enum с payload"), v_file, v_t)
             return 0
         return cc_TPtr(v_elem)
     if (cv_equal(cv_getkey(v_t, "kind"), cv_text("fnptr"))):
@@ -253,22 +258,22 @@ unsafe fn ccs_resolve_type(v_self: i64, v_t: i64, v_indirect: i64) -> i64:
     let subject_24: i64 = cv_getkey(v_t, "kind")
     if ((cv_equal(subject_24, cv_text("slice")) or cv_equal(subject_24, cv_text("slice_mut")))):
         v_elem = ccs_resolve_type(v_self, cv_subscript(cv_getkey(v_t, "a"), 3), v_indirect)
-        if cc_is_owned(v_elem): cc_error(cv_text("OwnedBuffer нельзя хранить в slice"), v_file, cv_getkey(v_t, "line"))
+        if cc_is_owned(v_elem): ccs_error(cv_text("OwnedBuffer нельзя хранить в slice"), v_file, v_t)
         if cv_classes(v_elem, "TSlice") or cv_truth(cc_contains_tagged_type(v_elem)):
-            cc_error(cv_text("slice не может содержать slice или Option/Result или enum с payload"), v_file, cv_getkey(v_t, "line"))
+            ccs_error(cv_text("slice не может содержать slice или Option/Result или enum с payload"), v_file, v_t)
             return 0
         return cc_TSlice(v_elem, cv_bool((cv_equal(cv_getkey(v_t, "kind"), cv_text("slice_mut")))))
     if (cv_equal(cv_getkey(v_t, "kind"), cv_text("array"))):
         v_elem = ccs_resolve_type(v_self, cv_subscript(cv_getkey(v_t, "a"), 3), v_indirect)
-        if cc_is_owned(v_elem): cc_error(cv_text("OwnedBuffer нельзя хранить в массиве"), v_file, cv_getkey(v_t, "line"))
+        if cc_is_owned(v_elem): ccs_error(cv_text("OwnedBuffer нельзя хранить в массиве"), v_file, v_t)
         if cv_classes(v_elem, "TSlice"):
-            cc_error(cv_text("slice нельзя хранить в массиве"), v_file, cv_getkey(v_t, "line"))
+            ccs_error(cv_text("slice нельзя хранить в массиве"), v_file, v_t)
             return 0
         if cv_truth(cc_contains_tagged_type(v_elem)):
-            cc_error(cv_text("Option/Result нельзя помещать в массив (как и enum с payload)"), v_file, cv_getkey(v_t, "line"))
+            ccs_error(cv_text("Option/Result нельзя помещать в массив (как и enum с payload)"), v_file, v_t)
             return 0
         return cc_TArray(v_elem, cv_subscript(cv_getkey(v_t, "a"), 11))
-    cc_error(cv_text("плохой тип"), v_file, cv_getkey(v_t, "line"))
+    ccs_error(cv_text("плохой тип"), v_file, v_t)
     return 0
 
 unsafe fn cc_allowed_payload(typ: i64) -> bool:
@@ -377,7 +382,7 @@ unsafe fn ccs_check_buffer_cast(v_self: i64, v_a: i64, v_b: i64, v_e: i64):
     # A literal null does not retype a live handle or its storage.
     if cv_classes(v_b, "TPtr") and cv_classes(v_e, "IntLit") and cv_equal(cv_getkey(v_e, "val"), cv_i(0)): return
     if ccs_contains_buffer_owner(v_self, v_a) or ccs_contains_buffer_owner(v_self, v_b):
-        cc_error(cv_text("представление BorrowBuffer нельзя приводить через raw-указатель"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("представление BorrowBuffer нельзя приводить через raw-указатель"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
 
 unsafe fn ccs_buffer_view_type_error(v_file: i64, v_line: i64):
     cc_error(cv_text("BufferRead разрешён только как локальное заимствование через let без явной аннотации типа"), v_file, v_line)
@@ -480,7 +485,7 @@ unsafe fn ccs_ensure_layout(v_self: i64, v_typ: i64) -> i64:
                 cv_push(pieces_3, cv_text("struct "))
                 cv_push(pieces_3, cv_format(cc_display(v_record), ""))
                 cv_push(pieces_3, cv_text(": бесконечная рекурсия по значению"))
-                cc_error(cv_join(cv_text(""), pieces_3), cv_getkey(v_sd, "file"), cv_getkey(v_sd, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_3), cv_getkey(v_sd, "file"), v_sd)
                 return 0
             cv_add_set(v_active, v_record)
             v_variables = cv_asdict(cv_zip(cv_getkey(v_sd, "type_params"), cv_getkey(v_record, "args")))
@@ -497,12 +502,12 @@ unsafe fn ccs_ensure_layout(v_self: i64, v_typ: i64) -> i64:
                 let unpack_12: i64 = cv_at(seq_11, index_10)
                 v_field = cv_at(unpack_12, 1)
                 if cc_is_owned(v_field) or cc_is_owned_ptr(v_field):
-                    cc_error(cv_text("OwnedBuffer нельзя хранить в struct"), cv_getkey(v_sd, "file"), cv_getkey(v_sd, "line"))
+                    ccs_error(cv_text("OwnedBuffer нельзя хранить в struct"), cv_getkey(v_sd, "file"), v_sd)
                 if cv_classes(v_field, "TSlice"):
-                    cc_error(cv_text("slice нельзя хранить в struct"), cv_getkey(v_sd, "file"), cv_getkey(v_sd, "line"))
+                    ccs_error(cv_text("slice нельзя хранить в struct"), cv_getkey(v_sd, "file"), v_sd)
                     return 0
                 if cv_truth(cc_contains_tagged_type(v_field)):
-                    cc_error(cv_text("Option/Result нельзя помещать в поля struct или скрывать за ptr (как и enum с payload)"), cv_getkey(v_sd, "file"), cv_getkey(v_sd, "line"))
+                    ccs_error(cv_text("Option/Result нельзя помещать в поля struct или скрывать за ptr (как и enum с payload)"), cv_getkey(v_sd, "file"), v_sd)
                     return 0
             cv_push(v_pending, cv_pair(v_record, v_resolved))
             let collect_13: i64 = cv_vector(CV_LIST)
@@ -541,7 +546,7 @@ unsafe fn ccs_ensure_layout(v_self: i64, v_typ: i64) -> i64:
             cv_push(pieces_23, cv_text("struct "))
             cv_push(pieces_23, cv_format(cv_getkey(v_sd, "name"), ""))
             cv_push(pieces_23, cv_text(": размер структуры превышает лимит x86-64"))
-            cc_error(cv_join(cv_text(""), pieces_23), cv_getkey(v_sd, "file"), cv_getkey(v_sd, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_23), cv_getkey(v_sd, "file"), v_sd)
             return 0
         let items_24: i64 = cv_vector(CV_TUPLE)
         cv_push(items_24, v_fields)
@@ -623,13 +628,13 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
         for index_3 in 0..cv_len(seq_4):
             v_sd = cv_at(seq_4, index_3)
             if cv_truth(cv_getkey(v_sd, "c_layout")) and cv_truth(cv_getkey(v_sd, "type_params")):
-                cc_error(cv_text("extern struct не поддерживает параметры типа"), cv_getkey(v_sd, "file"), cv_getkey(v_sd, "line"))
+                ccs_error(cv_text("extern struct не поддерживает параметры типа"), cv_getkey(v_sd, "file"), v_sd)
             if (cv_contains(cv_getkey(v_self, "struct_defs"), cv_getkey(v_sd, "name"))):
                 let pieces_5: i64 = cv_list()
                 cv_push(pieces_5, cv_text("struct "))
                 cv_push(pieces_5, cv_format(cv_getkey(v_sd, "name"), ""))
                 cv_push(pieces_5, cv_text(" определён дважды"))
-                cc_error(cv_join(cv_text(""), pieces_5), cv_getkey(v_sd, "file"), cv_getkey(v_sd, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_5), cv_getkey(v_sd, "file"), v_sd)
                 return 0
             let original: i64 = cv_get(v_sd, cv_text("source_name"), cv_getkey(v_sd, "name"))
             let logic_7: bool = (cv_contains(cc_k_scalar_type_names, original))
@@ -641,7 +646,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                 cv_push(pieces_8, cv_text("имя "))
                 cv_push(pieces_8, cv_format(cv_getkey(v_sd, "name"), ""))
                 cv_push(pieces_8, cv_text(" зарезервировано для встроенного типа"))
-                cc_error(cv_join(cv_text(""), pieces_8), cv_getkey(v_sd, "file"), cv_getkey(v_sd, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_8), cv_getkey(v_sd, "file"), v_sd)
                 return 0
             cv_set(cv_getkey(v_self, "struct_defs"), cv_getkey(v_sd, "name"), v_sd)
         let seq_10: i64 = cv_getkey(v_prog, "enums")
@@ -652,7 +657,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                 cv_push(pieces_11, cv_text("enum "))
                 cv_push(pieces_11, cv_format(cv_getkey(v_ed, "name"), ""))
                 cv_push(pieces_11, cv_text(" определён дважды"))
-                cc_error(cv_join(cv_text(""), pieces_11), cv_getkey(v_ed, "file"), cv_getkey(v_ed, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_11), cv_getkey(v_ed, "file"), v_ed)
                 return 0
             cv_set(cv_getkey(v_self, "enum_defs"), cv_getkey(v_ed, "name"), v_ed)
     v_collisions = cv_and(cv_asset(cv_getkey(v_self, "struct_defs")), cv_asset(cv_getkey(v_self, "enum_defs")))
@@ -663,7 +668,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
         cv_push(pieces_12, cv_text("имя "))
         cv_push(pieces_12, cv_format(v_name, ""))
         cv_push(pieces_12, cv_text(" используется и для struct, и для enum"))
-        cc_error(cv_join(cv_text(""), pieces_12), cv_getkey(v_ed, "file"), cv_getkey(v_ed, "line"))
+        ccs_error(cv_join(cv_text(""), pieces_12), cv_getkey(v_ed, "file"), v_ed)
         return 0
     let seq_14: i64 = cv_items(cv_getkey(v_self, "enum_defs"))
     for index_13 in 0..cv_len(seq_14):
@@ -684,7 +689,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                 cv_push(pieces_19, cv_format(v_name, ""))
                 cv_push(pieces_19, cv_text(": повторный discriminant "))
                 cv_push(pieces_19, cv_format(v_value, ""))
-                cc_error(cv_join(cv_text(""), pieces_19), cv_getkey(v_ed, "file"), cv_getkey(v_ed, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_19), cv_getkey(v_ed, "file"), v_ed)
                 return 0
             cv_add_set(v_seen_values, v_value)
             if (cv_contains(v_values, v_variant)):
@@ -694,7 +699,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                 cv_push(pieces_20, cv_text(": вариант "))
                 cv_push(pieces_20, cv_format(v_variant, ""))
                 cv_push(pieces_20, cv_text(" определён дважды"))
-                cc_error(cv_join(cv_text(""), pieces_20), cv_getkey(v_ed, "file"), cv_getkey(v_ed, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_20), cv_getkey(v_ed, "file"), v_ed)
                 return 0
             cv_set(v_values, v_variant, v_value)
             let payload: i64 = cv_at(unpack_18, 2)
@@ -719,7 +724,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
             if cv_truth(cv_getkey(v_fn, "type_params")):
                 continue
             if (cv_contains(cv_getkey(v_self, "fns"), cv_getkey(v_fn, "name"))):
-                cc_error(cv_cat(cv_text("дубликат функции "), cv_format(cv_getkey(v_fn, "name"), "")), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                ccs_error(cv_cat(cv_text("дубликат функции "), cv_format(cv_getkey(v_fn, "name"), "")), cv_getkey(v_fn, "file"), v_fn)
                 return 0
             cv_set(cv_getkey(v_self, "fns"), cv_getkey(v_fn, "name"), v_fn)
             if ((cv_equal(cv_getkey(v_fn, "name"), cv_text("Option"))) or (cv_equal(cv_getkey(v_fn, "name"), cv_text("Result")))):
@@ -727,7 +732,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                 cv_push(pieces_28, cv_text("имя "))
                 cv_push(pieces_28, cv_format(cv_getkey(v_fn, "name"), ""))
                 cv_push(pieces_28, cv_text(" зарезервировано встроенным wrapper-типом"))
-                cc_error(cv_join(cv_text(""), pieces_28), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_28), cv_getkey(v_fn, "file"), v_fn)
                 return 0
             let items_29: i64 = cv_vector(CV_LIST)
             cv_field(v_fn, "sig_params", items_29)
@@ -738,13 +743,13 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                 v_pt = cv_at(unpack_32, 1)
                 v_resolved = ccs_resolve_type(v_self, v_pt, CV_FALSE)
                 if (cv_classes(v_resolved, "TSlice") and ((not (cv_getkey(v_fn, "native") == 0)) or (cv_getkey(v_fn, "body") == 0))):
-                    cc_error(cv_text("slice не поддерживается в native/extern ABI"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                    ccs_error(cv_text("slice не поддерживается в native/extern ABI"), cv_getkey(v_fn, "file"), v_fn)
                     return 0
                 if (cv_classes(v_resolved, "TWrapper") and ((not (cv_getkey(v_fn, "native") == 0)) or (cv_getkey(v_fn, "body") == 0))):
-                    cc_error(cv_text("Option/Result параметры запрещены в extern/native"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                    ccs_error(cv_text("Option/Result параметры запрещены в extern/native"), cv_getkey(v_fn, "file"), v_fn)
                     return 0
                 if cv_classes(v_resolved, "TTaggedEnum") and (cv_getkey(v_fn, "native") != 0 or cv_getkey(v_fn, "body") == 0):
-                    cc_error(cv_text("enum с payload запрещён в extern/native ABI"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                    ccs_error(cv_text("enum с payload запрещён в extern/native ABI"), cv_getkey(v_fn, "file"), v_fn)
                     return 0
                 cv_push(cv_getkey(v_fn, "sig_params"), cv_pair(v_pn, v_resolved))
             let choice_33: i64 = 0
@@ -754,13 +759,13 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                 choice_33 = 0
             cv_field(v_fn, "sig_ret", choice_33)
             if (cv_classes(cv_getkey(v_fn, "sig_ret"), "TSlice") and ((not (cv_getkey(v_fn, "native") == 0)) or (cv_getkey(v_fn, "body") == 0))):
-                cc_error(cv_text("slice не поддерживается в native/extern ABI"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                ccs_error(cv_text("slice не поддерживается в native/extern ABI"), cv_getkey(v_fn, "file"), v_fn)
                 return 0
             if (cv_classes(cv_getkey(v_fn, "sig_ret"), "TWrapper") and ((not (cv_getkey(v_fn, "native") == 0)) or (cv_getkey(v_fn, "body") == 0))):
-                cc_error(cv_text("Option/Result результаты запрещены в extern/native"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                ccs_error(cv_text("Option/Result результаты запрещены в extern/native"), cv_getkey(v_fn, "file"), v_fn)
                 return 0
             if cv_classes(cv_getkey(v_fn, "sig_ret"), "TTaggedEnum") and (cv_getkey(v_fn, "native") != 0 or cv_getkey(v_fn, "body") == 0):
-                cc_error(cv_text("enum с payload запрещён в extern/native ABI"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                ccs_error(cv_text("enum с payload запрещён в extern/native ABI"), cv_getkey(v_fn, "file"), v_fn)
                 return 0
             ccs_check_fn_abi(v_self, v_fn)
         let seq_35: i64 = cv_getkey(v_prog, "uses")
@@ -776,10 +781,10 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
             v_fn = cv_at(seq_39, index_38)
             if cv_truth(cv_getkey(v_fn, "type_params")):
                 if ((cv_contains(cv_getkey(v_self, "generic_fns"), cv_getkey(v_fn, "name"))) or (cv_contains(cv_getkey(v_self, "fns"), cv_getkey(v_fn, "name")))):
-                    cc_error(cv_cat(cv_text("дубликат функции "), cv_format(cv_getkey(v_fn, "name"), "")), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                    ccs_error(cv_cat(cv_text("дубликат функции "), cv_format(cv_getkey(v_fn, "name"), "")), cv_getkey(v_fn, "file"), v_fn)
                     return 0
                 if ((not (cv_getkey(v_fn, "native") == 0)) or (cv_getkey(v_fn, "body") == 0)):
-                    cc_error(cv_text("generic-функции пока не поддерживают native/extern ABI"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                    ccs_error(cv_text("generic-функции пока не поддерживают native/extern ABI"), cv_getkey(v_fn, "file"), v_fn)
                     return 0
                 cv_set(cv_getkey(v_self, "generic_fns"), cv_getkey(v_fn, "name"), v_fn)
     let seq_41: i64 = cv_getkey(v_self, "progs")
@@ -794,11 +799,11 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                     cv_push(pieces_44, cv_text("имя "))
                     cv_push(pieces_44, cv_format(cv_getkey(v_st, "name"), ""))
                     cv_push(pieces_44, cv_text(" объявлено дважды"))
-                    cc_error(cv_join(cv_text(""), pieces_44), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                    ccs_error(cv_join(cv_text(""), pieces_44), cv_getkey(v_prog, "file"), v_st)
                     return 0
                 let kindof_45: i64 = cv_getkey(v_st, "init")
                 if not (cv_classes(kindof_45, "IntLit") or cv_classes(kindof_45, "FloatLit") or cv_classes(kindof_45, "StrLit") or cv_classes(kindof_45, "CharLit") or cv_classes(kindof_45, "BoolLit") or cv_classes(kindof_45, "Unary") or cv_classes(kindof_45, "Binary") or cv_classes(kindof_45, "Cast") or cv_classes(kindof_45, "Member") or cv_classes(kindof_45, "SizeAlignExpr") or cv_classes(kindof_45, "VarRef")):
-                    cc_error(cv_text("const требует константное выражение"), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                    ccs_error(cv_text("const требует константное выражение"), cv_getkey(v_prog, "file"), v_st)
                     return 0
                 let items_46: i64 = cv_vector(CV_LIST)
                 let items_47: i64 = cv_vector(CV_LIST)
@@ -824,13 +829,13 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                     cv_push(pieces_50, cv_format(cc_display(v_init_t), ""))
                     cv_push(pieces_50, cv_text(" нельзя присвоить "))
                     cv_push(pieces_50, cv_format(cc_display(v_want), ""))
-                    cc_error(cv_join(cv_text(""), pieces_50), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                    ccs_error(cv_join(cv_text(""), pieces_50), cv_getkey(v_prog, "file"), v_st)
                     return 0
                 if (cv_truth(cc_is_array(v_want)) or cv_truth(cc_is_struct(v_want)) or cv_truth(cc_is_ptr(v_want)) or cv_truth(cc_is_string(v_want)) or cv_classes(v_want, "TFnPtr") or cv_classes(v_want, "TTaggedEnum")):
-                    cc_error(cv_text("const поддерживает только скалярные типы"), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                    ccs_error(cv_text("const поддерживает только скалярные типы"), cv_getkey(v_prog, "file"), v_st)
                     return 0
                 if (cv_classes(cv_getkey(v_st, "init"), "VarRef") and not cv_has(cv_getkey(v_st, "init"), cv_text("const_binding"))):
-                    cc_error(cv_cat(cv_text("неизвестное имя "), cv_format(cv_getkey(cv_getkey(v_st, "init"), "name"), "r")), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                    ccs_error(cv_cat(cv_text("неизвестное имя "), cv_format(cv_getkey(cv_getkey(v_st, "init"), "name"), "r")), cv_getkey(v_prog, "file"), v_st)
                     return 0
                 v_val = ccs_fold_const(v_self, cv_getkey(v_st, "init"))
                 if cv_truth(cc_is_int(v_want)):
@@ -839,7 +844,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                     v_lo = cv_at(unpack_51, 0)
                     v_hi = cv_at(unpack_51, 1)
                     if ((cv_less(v_val, v_lo)) or (cv_less(v_hi, v_val))):
-                        cc_error(cv_text("целочисленное переполнение в const"), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("целочисленное переполнение в const"), cv_getkey(v_prog, "file"), v_st)
                         return 0
                 else:
                     if cv_truth(cc_is_float(v_want)):
@@ -868,7 +873,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                         let kindof_59: i64 = cv_getkey(v_st, "init")
                         logic_60 = not (cv_classes(kindof_59, "IntLit") or cv_classes(kindof_59, "FloatLit") or cv_classes(kindof_59, "StrLit") or cv_classes(kindof_59, "CharLit") or cv_classes(kindof_59, "BoolLit") or cv_classes(kindof_59, "Unary") or cv_classes(kindof_59, "Binary") or cv_classes(kindof_59, "Cast") or cv_classes(kindof_59, "Member"))
                     if (logic_60):
-                        cc_error(cv_text("глобальная let в модуле требует константу"), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("глобальная let в модуле требует константу"), cv_getkey(v_prog, "file"), v_st)
                         return 0
                     let items_61: i64 = cv_vector(CV_LIST)
                     let items_62: i64 = cv_vector(CV_LIST)
@@ -881,10 +886,10 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                     ccs_setup_fn(v_self, v_dummy)
                     v_init_t = ccs_tf(v_self, cv_getkey(v_st, "init"), 0)
                     if cv_classes(v_init_t, "TWrapper"):
-                        cc_error(cv_text("Option/Result нельзя использовать в global/const"), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("Option/Result нельзя использовать в global/const"), cv_getkey(v_prog, "file"), v_st)
                         return 0
                     if (cv_truth(cc_is_array(v_init_t)) or cv_truth(cc_is_struct(v_init_t)) or cv_classes(v_init_t, "TTaggedEnum")):
-                        cc_error(cv_text("глобальная let должна иметь скалярный тип"), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("глобальная let должна иметь скалярный тип"), cv_getkey(v_prog, "file"), v_st)
                         return 0
                     let choice_64: i64 = 0
                     if (not (cv_getkey(v_st, "typ") == 0)):
@@ -900,7 +905,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                         cv_push(pieces_65, cv_format(cc_display(v_init_t), ""))
                         cv_push(pieces_65, cv_text(" нельзя присвоить "))
                         cv_push(pieces_65, cv_format(cc_display(v_want), ""))
-                        cc_error(cv_join(cv_text(""), pieces_65), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_join(cv_text(""), pieces_65), cv_getkey(v_prog, "file"), v_st)
                         return 0
                     let choice_66: i64 = 0
                     if (not (v_want == 0)):
@@ -923,7 +928,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                             v_lo = cv_at(unpack_68, 0)
                             v_hi = cv_at(unpack_68, 1)
                             if ((cv_less(cv_getkey(v_st, "const_val"), v_lo)) or (cv_less(v_hi, cv_getkey(v_st, "const_val")))):
-                                cc_error(cv_text("целочисленное переполнение в глобальной константе"), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                                ccs_error(cv_text("целочисленное переполнение в глобальной константе"), cv_getkey(v_prog, "file"), v_st)
                                 return 0
                     cv_field(v_st, "file", cv_getkey(v_prog, "file"))
                     cv_field(v_st, "name_hdr", cv_getkey(v_st, "name"))
@@ -942,7 +947,7 @@ unsafe fn ccs_collect(v_self: i64) -> i64:
                             cv_push(pieces_69, cv_text("в модуле разрешены const-let и вызовы инициализации (строка "))
                             cv_push(pieces_69, cv_format(cv_getkey(v_st, "line"), ""))
                             cv_push(pieces_69, cv_text(")"))
-                            cc_error(cv_join(cv_text(""), pieces_69), cv_getkey(v_prog, "file"), cv_getkey(v_st, "line"))
+                            ccs_error(cv_join(cv_text(""), pieces_69), cv_getkey(v_prog, "file"), v_st)
                             return 0
             let items_70: i64 = cv_vector(CV_LIST)
             cv_field(v_prog, "main", items_70)
@@ -984,20 +989,20 @@ unsafe fn ccs_check_fn_abi(v_self: i64, v_fn: i64) -> i64:
         let t_10: i64 = cv_at(seq_9, index_8)
         cv_push(collect_7, cc_is_array(t_10))
     if cv_truth(cv_any(collect_7)):
-        cc_error(cv_text("массив нельзя передавать по значению: используйте slice или ptr"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+        ccs_error(cv_text("массив нельзя передавать по значению: используйте slice или ptr"), cv_getkey(v_fn, "file"), v_fn)
         return 0
     if cv_truth(cc_is_array(cv_getkey(v_fn, "sig_ret"))):
-        cc_error(cv_text("функции не могут возвращать массивы: возвращайте ptr"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+        ccs_error(cv_text("функции не могут возвращать массивы: возвращайте ptr"), cv_getkey(v_fn, "file"), v_fn)
         return 0
     if cv_truth(v_foreign):
         let raw: bool = cv_getkey(v_fn, "native") != 0
         for i in 0..cv_len(v_params):
             let typ: i64 = cv_at(v_params, i)
             if cv_classes(typ, "TStruct") and (raw or cv_getkey(typ, "c_abi") == 0):
-                cc_error(cv_text("структуры по значению требуют extern struct и extern fn"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+                ccs_error(cv_text("структуры по значению требуют extern struct и extern fn"), cv_getkey(v_fn, "file"), v_fn)
         let result: i64 = cv_getkey(v_fn, "sig_ret")
         if cv_classes(result, "TStruct") and (raw or cv_getkey(result, "c_abi") == 0):
-            cc_error(cv_text("возврат struct запрещён в extern/native ABI без extern struct и extern fn"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+            ccs_error(cv_text("возврат struct запрещён в extern/native ABI без extern struct и extern fn"), cv_getkey(v_fn, "file"), v_fn)
     let logic_34: bool = not (cv_truth(cv_getkey(v_fn, "is_unsafe")))
     if logic_34:
         let collect_28: i64 = cv_vector(CV_LIST)
@@ -1013,7 +1018,7 @@ unsafe fn ccs_check_fn_abi(v_self: i64, v_fn: i64) -> i64:
             cv_push(collect_28, choice_33)
         logic_34 = cv_truth(cv_any(collect_28))
     if (logic_34):
-        cc_error(cv_text("функция с raw-указателями в сигнатуре должна быть объявлена unsafe"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+        ccs_error(cv_text("функция с raw-указателями в сигнатуре должна быть объявлена unsafe"), cv_getkey(v_fn, "file"), v_fn)
         return 0
     return 0
 
@@ -1419,12 +1424,12 @@ unsafe fn ccs_fold_const(v_self: i64, v_e: i64) -> i64:
                                             v_value = ccs_fold_const(v_self, cv_getkey(v_e, "x"))
                                             if cv_truth(cc_is_int(cv_getkey(v_e, "type"))):
                                                 v_value = cv_int(v_value, 83)
-                                                if v_value == 0: cc_error(cv_text("некорректное константное приведение к целому"), 0, cv_getkey(v_e, "line"))
+                                                if v_value == 0: ccs_error(cv_text("некорректное константное приведение к целому"), 0, v_e)
                                                 let unpack_5: i64 = cc_int_bounds(cv_getkey(v_e, "type"))
                                                 v_lo = cv_at(unpack_5, 0)
                                                 v_hi = cv_at(unpack_5, 1)
                                                 if ((cv_less(v_value, v_lo)) or (cv_less(v_hi, v_value))):
-                                                    cc_error(cv_text("целочисленное переполнение в const"), 0, cv_getkey(v_e, "line"))
+                                                    ccs_error(cv_text("целочисленное переполнение в const"), 0, v_e)
                                                     return 0
                                             else:
                                                 if (cv_truth(cc_is_float(cv_getkey(v_e, "type"))) and (cv_equal(cv_getkey(cv_getkey(v_e, "type"), "bits"), 515))):
@@ -1438,12 +1443,12 @@ unsafe fn ccs_fold_const(v_self: i64, v_e: i64) -> i64:
                                                     if (cv_equal(cv_getkey(v_e, "op"), cv_text("not"))):
                                                         v_value = cv_int(cv_bool(not (cv_truth(ccs_const_truthy(v_self, cv_getkey(v_e, "x"), v_operand)))), 83)
                                                     else:
-                                                        cc_error(cv_add(cv_text("const: унарная операция "), cv_getkey(v_e, "op")), 0, cv_getkey(v_e, "line"))
+                                                        ccs_error(cv_add(cv_text("const: унарная операция "), cv_getkey(v_e, "op")), 0, v_e)
                                                         return 0
                                             else:
                                                 if cv_classes(v_e, "Binary"):
                                                     if cv_truth(cv_get(v_e, cv_text("sugar"), 0)):
-                                                        cc_error(cv_text("строковые операции нельзя использовать в глобальной константе"), 0, cv_getkey(v_e, "line"))
+                                                        ccs_error(cv_text("строковые операции нельзя использовать в глобальной константе"), 0, v_e)
                                                         return 0
                                                     v_left = ccs_fold_const(v_self, cv_getkey(v_e, "l"))
                                                     v_left_truth = ccs_const_truthy(v_self, cv_getkey(v_e, "l"), v_left)
@@ -1495,10 +1500,10 @@ unsafe fn ccs_fold_const(v_self: i64, v_e: i64) -> i64:
                                                                                 else:
                                                                                     if cv_truth(cc_is_int(v_common)):
                                                                                         if (cv_equal(v_right, 3)):
-                                                                                            cc_error(cv_text("деление на 0 в const"), 0, cv_getkey(v_e, "line"))
+                                                                                            ccs_error(cv_text("деление на 0 в const"), 0, v_e)
                                                                                             return 0
                                                                                         if (cv_truth(cv_getkey(v_common, "signed")) and (cv_equal(v_left, cv_neg(cv_shl(11, 507)))) and (cv_equal(v_right, cv_neg(11)))):
-                                                                                            cc_error(cv_text("целочисленное переполнение в const"), 0, cv_getkey(v_e, "line"))
+                                                                                            ccs_error(cv_text("целочисленное переполнение в const"), 0, v_e)
                                                                                             return 0
                                                                                         v_q = cv_floor(cv_abs(v_left), cv_abs(v_right))
                                                                                         let choice_8: i64 = 0
@@ -1508,15 +1513,15 @@ unsafe fn ccs_fold_const(v_self: i64, v_e: i64) -> i64:
                                                                                             choice_8 = cv_neg(v_q)
                                                                                         v_value = choice_8
                                                                                     else:
-                                                                                        cc_error(cv_text("неконстантное деление"), 0, cv_getkey(v_e, "line"))
+                                                                                        ccs_error(cv_text("неконстантное деление"), 0, v_e)
                                                                                         return 0
                                                                             else:
                                                                                 if (cv_equal(cv_getkey(v_e, "op"), cv_text("%"))):
                                                                                     if (cv_equal(v_right, 3)):
-                                                                                        cc_error(cv_text("деление на 0 в const"), 0, cv_getkey(v_e, "line"))
+                                                                                        ccs_error(cv_text("деление на 0 в const"), 0, v_e)
                                                                                         return 0
                                                                                     if (cv_truth(cc_is_int(v_common)) and cv_truth(cv_getkey(v_common, "signed")) and (cv_equal(v_left, cv_neg(cv_shl(11, 507)))) and (cv_equal(v_right, cv_neg(11)))):
-                                                                                        cc_error(cv_text("целочисленное переполнение в const"), 0, cv_getkey(v_e, "line"))
+                                                                                        ccs_error(cv_text("целочисленное переполнение в const"), 0, v_e)
                                                                                         return 0
                                                                                     v_q = cv_floor(cv_abs(v_left), cv_abs(v_right))
                                                                                     let choice_9: i64 = 0
@@ -1538,13 +1543,13 @@ unsafe fn ccs_fold_const(v_self: i64, v_e: i64) -> i64:
                                                                                             else:
                                                                                                 if (cv_equal(cv_getkey(v_e, "op"), cv_text("<<"))):
                                                                                                     if ((cv_less(v_right, 3)) or (cv_le(cv_getkey(v_common, "bits"), v_right))):
-                                                                                                        cc_error(cv_text("некорректное число битов сдвига"), 0, cv_getkey(v_e, "line"))
+                                                                                                        ccs_error(cv_text("некорректное число битов сдвига"), 0, v_e)
                                                                                                         return 0
                                                                                                     v_value = cv_and(cv_shl(v_left, v_right), cv_sub(cv_shl(11, cv_getkey(v_common, "bits")), 11))
                                                                                                 else:
                                                                                                     if (cv_equal(cv_getkey(v_e, "op"), cv_text(">>"))):
                                                                                                         if ((cv_less(v_right, 3)) or (cv_le(cv_getkey(v_common, "bits"), v_right))):
-                                                                                                            cc_error(cv_text("некорректное число битов сдвига"), 0, cv_getkey(v_e, "line"))
+                                                                                                            ccs_error(cv_text("некорректное число битов сдвига"), 0, v_e)
                                                                                                             return 0
                                                                                                         v_value = cv_shr(v_left, v_right)
                                                                                                     else:
@@ -1559,7 +1564,7 @@ unsafe fn ccs_fold_const(v_self: i64, v_e: i64) -> i64:
                                                                                                             cv_set(dict_11, cv_text("<="), cv_bool((cv_le(v_left, v_right))))
                                                                                                             v_value = cv_int(cv_subscript(dict_11, cv_getkey(v_e, "op")), 83)
                                                                                                         else:
-                                                                                                            cc_error(cv_add(cv_text("const-fold: операция "), cv_getkey(v_e, "op")), 0, cv_getkey(v_e, "line"))
+                                                                                                            ccs_error(cv_add(cv_text("const-fold: операция "), cv_getkey(v_e, "op")), 0, v_e)
                                                                                                             return 0
                                                                 let logic_13: bool = cv_truth(cc_is_int(v_common))
                                                                 if logic_13:
@@ -1570,10 +1575,10 @@ unsafe fn ccs_fold_const(v_self: i64, v_e: i64) -> i64:
                                                                     v_lo = cv_at(unpack_14, 0)
                                                                     v_hi = cv_at(unpack_14, 1)
                                                                     if ((cv_less(v_value, v_lo)) or (cv_less(v_hi, v_value))):
-                                                                        cc_error(cv_text("целочисленное переполнение в const"), 0, cv_getkey(v_e, "line"))
+                                                                        ccs_error(cv_text("целочисленное переполнение в const"), 0, v_e)
                                                                         return 0
                                                 else:
-                                                    cc_error(cv_text("неконстантное выражение при глобальной инициализации"), 0, cv_getkey(v_e, "line"))
+                                                    ccs_error(cv_text("неконстантное выражение при глобальной инициализации"), 0, v_e)
                                                     return 0
     v_typ = cv_get(v_e, cv_text("type"), 0)
     if (cv_truth(cc_is_int(v_typ)) and cv_classes(v_value, "int")):
@@ -1582,7 +1587,7 @@ unsafe fn ccs_fold_const(v_self: i64, v_e: i64) -> i64:
             v_lo = cv_at(unpack_15, 0)
             v_hi = cv_at(unpack_15, 1)
             if ((cv_less(v_value, v_lo)) or (cv_less(v_hi, v_value))):
-                cc_error(cv_text("целочисленное переполнение в const"), 0, cv_getkey(v_e, "line"))
+                ccs_error(cv_text("целочисленное переполнение в const"), 0, v_e)
                 return 0
         v_value = cv_and(v_value, cv_sub(cv_shl(11, cv_getkey(v_typ, "bits")), 11))
         if (cv_truth(cv_getkey(v_typ, "signed")) and (cv_le(cv_shl(11, cv_sub(cv_getkey(v_typ, "bits"), 11)), v_value))):
@@ -1601,7 +1606,7 @@ unsafe fn ccs_setup_fn(v_self: i64, v_fn: i64) -> i64:
         cv_push(pieces_1, cv_text("имя "))
         cv_push(pieces_1, cv_format(cv_getkey(v_fn, "name"), ""))
         cv_push(pieces_1, cv_text(" зарезервировано (встроенная функция)"))
-        cc_error(cv_join(cv_text(""), pieces_1), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+        ccs_error(cv_join(cv_text(""), pieces_1), cv_getkey(v_fn, "file"), v_fn)
         return 0
     let items_2: i64 = cv_vector(CV_LIST)
     cv_field(v_self, "slots", items_2)
@@ -1743,7 +1748,7 @@ unsafe fn ccs_typecheck_fn(v_self: i64, v_fn: i64) -> i64:
         v_pt = cv_at(unpack_21, 1)
         v_pt = ccs_resolve_type(v_self, v_pt, CV_FALSE)
         if (cv_classes(v_pt, "TSlice") and (not (cv_getkey(v_fn, "native") == 0))):
-            cc_error(cv_text("slice не поддерживается в native/extern ABI"), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+            ccs_error(cv_text("slice не поддерживается в native/extern ABI"), cv_getkey(v_fn, "file"), v_fn)
             return 0
         ccs_declare(v_self, v_pn, v_pt, CV_FALSE, cv_getkey(v_fn, "line"), cv_text("param"))
     let kindof_22: i64 = cv_getkey(v_fn, "sig_ret")
@@ -1763,73 +1768,71 @@ unsafe fn ccs_typecheck_fn(v_self: i64, v_fn: i64) -> i64:
     ccs_check_ownership(v_self, v_fn)
     cv_field(v_fn, "slots", cv_getkey(v_self, "slots"))
     cv_field(v_fn, "ret_type", cv_getkey(v_fn, "sig_ret"))
-    if ((not (cv_getkey(v_fn, "ret_type") == 0)) and not (cv_truth(ccs_always_return(v_self, cv_getkey(v_fn, "body"))))):
+    if cv_getkey(v_fn, "ret_type") != 0 and ccs_block_flow(cv_getkey(v_fn, "body")) & CC_FLOW_NEXT != 0:
         let pieces_25: i64 = cv_list()
         cv_push(pieces_25, cv_text("функция "))
         cv_push(pieces_25, cv_format(cv_getkey(v_fn, "name"), ""))
         cv_push(pieces_25, cv_text(" с -> "))
         cv_push(pieces_25, cv_format(cc_display(cv_getkey(v_fn, "ret_type")), ""))
         cv_push(pieces_25, cv_text(" не завершается return"))
-        cc_error(cv_join(cv_text(""), pieces_25), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+        ccs_error(cv_join(cv_text(""), pieces_25), cv_getkey(v_fn, "file"), v_fn)
         return 0
     if ((cv_getkey(v_fn, "ret_type") == 0) and cv_truth(cv_getkey(v_self, "had_ret_values"))):
         let pieces_26: i64 = cv_list()
         cv_push(pieces_26, cv_text("функция "))
         cv_push(pieces_26, cv_format(cv_getkey(v_fn, "name"), ""))
         cv_push(pieces_26, cv_text(" объявлена без ->, но содержит return со значением"))
-        cc_error(cv_join(cv_text(""), pieces_26), cv_getkey(v_fn, "file"), cv_getkey(v_fn, "line"))
+        ccs_error(cv_join(cv_text(""), pieces_26), cv_getkey(v_fn, "file"), v_fn)
         return 0
     cv_field(v_self, "unsafe_depth", 3)
     return 0
 
-unsafe fn ccs_always_return(v_self: i64, v_stmts: i64) -> i64:
-    let v_st: i64 = 0
-    let v_last: i64 = 0
-    if not (cv_truth(v_stmts)):
-        return CV_FALSE
-    let seq_2: i64 = v_stmts
-    for index_1 in 0..cv_len(seq_2):
-        v_st = cv_at(seq_2, index_1)
-        let logic_7: bool = cv_classes(v_st, "MatchStmt") and cv_truth(cv_getkey(v_st, "arms"))
-        if logic_7:
-            let collect_3: i64 = cv_vector(CV_LIST)
-            let seq_5: i64 = cv_getkey(v_st, "arms")
-            for index_4 in 0..cv_len(seq_5):
-                let a_6: i64 = cv_at(seq_5, index_4)
-                cv_push(collect_3, ccs_always_return(v_self, cv_getkey(a_6, "body")))
-            logic_7 = cv_truth(cv_all(collect_3))
-        if (logic_7):
-            return CV_TRUE
-    v_last = cv_subscript(v_stmts, cv_neg(11))
-    if cv_classes(v_last, "ReturnStmt"):
-        return CV_TRUE
-    if cv_classes(v_last, "UnsafeStmt"):
-        return ccs_always_return(v_self, cv_getkey(v_last, "body"))
-    if cv_classes(v_last, "IfStmt"):
-        let collect_8: i64 = cv_vector(CV_LIST)
-        let seq_10: i64 = cv_getkey(v_last, "conds")
-        for index_9 in 0..cv_len(seq_10):
-            let unpack_11: i64 = cv_at(seq_10, index_9)
-            let b_12: i64 = cv_at(unpack_11, 1)
-            cv_push(collect_8, ccs_always_return(v_self, b_12))
-        if (cv_truth(cv_all(collect_8)) and (not (cv_getkey(v_last, "els") == 0)) and cv_truth(ccs_always_return(v_self, cv_getkey(v_last, "els")))):
-            return CV_TRUE
-        return CV_FALSE
-    if cv_classes(v_last, "WhileStmt"):
-        let choice_13: i64 = cv_bool(cv_classes(cv_getkey(v_last, "cond"), "BoolLit"))
-        if cv_truth(choice_13):
-            choice_13 = cv_getkey(cv_getkey(v_last, "cond"), "val")
-        if cv_truth(choice_13):
-            choice_13 = ccs_always_return(v_self, cv_getkey(v_last, "body"))
-        return choice_13
-    return CV_FALSE
+# Only fallthrough and breaks can reach a later statement. Returns, continues
+# and non-returning calls cannot; the enclosing loop consumes its own breaks.
+const CC_FLOW_NEXT: i64 = 1
+const CC_FLOW_BREAK: i64 = 2
+
+unsafe fn cc_literal_condition(expr: i64) -> i64:
+    if cv_classes(expr, "BoolLit"): return cv_getkey(expr, "val")
+    return 0
+
+unsafe fn ccs_block_flow(stmts: i64) -> i64:
+    let flow: i64 = CC_FLOW_NEXT
+    for i in 0..cv_len(stmts):
+        if flow & CC_FLOW_NEXT == 0: break
+        flow = (flow & CC_FLOW_BREAK) | ccs_stmt_flow(cv_at(stmts, i))
+    return flow
+
+unsafe fn ccs_stmt_flow(stmt: i64) -> i64:
+    if cv_classes(stmt, "ReturnStmt") or cv_classes(stmt, "ContinueStmt"): return 0
+    if cv_classes(stmt, "BreakStmt"): return CC_FLOW_BREAK
+    if cv_classes(stmt, "ExprStmt") and cv_truth(cv_getkey(cv_getkey(stmt, "expr"), "no_return")): return 0
+    if cv_classes(stmt, "UnsafeStmt"): return ccs_block_flow(cv_getkey(stmt, "body"))
+    if cv_classes(stmt, "IfStmt"):
+        let flow: i64 = 0
+        let arms: i64 = cv_getkey(stmt, "conds")
+        for i in 0..cv_len(arms):
+            let arm: i64 = cv_at(arms, i)
+            let known: i64 = cc_literal_condition(cv_at(arm, 0))
+            if known == CV_FALSE: continue
+            flow = flow | ccs_block_flow(cv_at(arm, 1))
+            if known == CV_TRUE: return flow
+        return flow | ccs_block_flow(cv_getkey(stmt, "els"))
+    if cv_classes(stmt, "MatchStmt"):
+        let flow: i64 = 0
+        let arms: i64 = cv_getkey(stmt, "arms")
+        for i in 0..cv_len(arms): flow = flow | ccs_block_flow(cv_getkey(cv_at(arms, i), "body"))
+        return flow
+    if cv_classes(stmt, "WhileStmt") and cc_literal_condition(cv_getkey(stmt, "cond")) == CV_TRUE:
+        if ccs_block_flow(cv_getkey(stmt, "body")) & CC_FLOW_BREAK == 0: return 0
+    return CC_FLOW_NEXT
 
 unsafe fn ccs_tf(v_self: i64, v_e: i64, v_expected: i64) -> i64:
     # Flat expression chains (1+1+1+...) build a deep AST without any parser
     # recursion; bound the type-checking recursion before it overflows the
     # stack. Matches the temp-slot limit of the code generator in spirit.
     if cv_less(cv_i(4096), cv_getkey(v_self, "tf_depth")):
-        cc_error(cv_text("слишком глубокое выражение в одной инструкции"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("слишком глубокое выражение в одной инструкции"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
     cv_field(v_self, "tf_depth", cv_add(cv_getkey(v_self, "tf_depth"), 11))
     defer cv_field(v_self, "tf_depth", cv_sub(cv_getkey(v_self, "tf_depth"), 11))
     if cv_classes(v_e, "Call"):
@@ -1852,7 +1855,7 @@ unsafe fn ccs_tf(v_self: i64, v_e: i64, v_expected: i64) -> i64:
     if ccs_buffer_type(v_self, v_t, "BufferRead") and not ccs_buffer_module_body(v_self):
         let v_scoped_arg: bool = cv_truth(cv_getkey(v_e, "buffer_read_argument")) and cv_truth(cv_getkey(cv_getkey(v_e, "slot"), "buffer_read_loan"))
         if not cv_truth(cv_getkey(v_e, "buffer_read_generated")) and not v_scoped_arg:
-            cc_error(cv_text("BufferRead нельзя копировать или передавать за пределы операций чтения"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("BufferRead нельзя копировать или передавать за пределы операций чтения"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
     cv_field(v_e, "type", v_t)
     # A literal that can never fit the annotated integer type must fail at
@@ -1860,7 +1863,7 @@ unsafe fn ccs_tf(v_self: i64, v_e: i64, v_expected: i64) -> i64:
     if cv_classes(v_e, "IntLit") and cv_classes(v_expected, "TInt"):
         let v_bounds: i64 = cc_int_bounds(v_expected)
         if cv_less(cv_getkey(v_e, "val"), cv_at(v_bounds, 0)) or cv_less(cv_at(v_bounds, 1), cv_getkey(v_e, "val")):
-            cc_error(cv_cat(cv_text("целочисленный литерал вне диапазона "), cc_display(v_expected)), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_cat(cv_text("целочисленный литерал вне диапазона "), cc_display(v_expected)), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
     if cv_classes(v_t, "TTaggedEnum") and (cv_classes(v_e, "Call") or cc_is_sum_ctor(v_e)):
         cv_field(v_e, "temp_slot", ccs_declare_temp(v_self, v_t, cv_getkey(v_e, "line")))
@@ -1870,7 +1873,7 @@ unsafe fn ccs_tf(v_self: i64, v_e: i64, v_expected: i64) -> i64:
 
 unsafe fn ccs_require_unsafe(v_self: i64, v_e: i64, v_operation: i64) -> i64:
     if (cv_le(cv_getkey(v_self, "unsafe_depth"), 3)):
-        cc_error(cv_cat(cv_format(v_operation, ""), cv_text(" требует unsafe-блок или unsafe-функцию")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_cat(cv_format(v_operation, ""), cv_text(" требует unsafe-блок или unsafe-функцию")), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     return 0
 
@@ -1899,10 +1902,10 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
     let v_null_pointer: i64 = 0
     if cv_classes(v_e, "IntLit"):
         if (cv_less(cv_getkey(v_e, "val"), cv_neg(cv_u(0x8000000000000000)))):
-            cc_error(cv_text("целочисленный литерал выходит за диапазон i64"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("целочисленный литерал выходит за диапазон i64"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         if (cv_less(cv_u(0xffffffffffffffff), cv_getkey(v_e, "val"))):
-            cc_error(cv_text("целочисленный литерал выходит за диапазон u64"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("целочисленный литерал выходит за диапазон u64"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         let choice_1: i64 = 0
         if (cv_less(cv_i(9223372036854775807), cv_getkey(v_e, "val"))):
@@ -1933,7 +1936,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
         let name: i64 = cv_getkey(v_e, "name")
         let typ: i64 = ccs_global_ref(v_self, v_e, ccs_module_name(v_self, name, file, cv_getkey(v_e, "line")))
         if typ != 0: return typ
-        cc_error(cv_cat(cv_text("неизвестное имя "), cv_format(cv_getkey(v_e, "name"), "r")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_cat(cv_text("неизвестное имя "), cv_format(cv_getkey(v_e, "name"), "r")), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if cv_classes(v_e, "SizeAlignExpr"):
         v_typ = ccs_resolve_type(v_self, cv_getkey(v_e, "texpr"), CV_FALSE)
@@ -1964,7 +1967,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
         if (cv_equal(cv_getkey(v_e, "op"), cv_text("?"))):
             v_rt = cv_getkey(cv_getkey(v_self, "fn"), "sig_ret")
             if not (cv_classes(v_t, "TWrapper")):
-                cc_error(cv_text("постфиксный ? требует Option или Result"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_text("постфиксный ? требует Option или Result"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             let choice_6: i64 = cv_bool(cv_classes(v_rt, "TWrapper"))
             if cv_truth(choice_6):
@@ -1975,7 +1978,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
             if (cv_truth(v_compatible) and (cv_equal(cv_getkey(v_t, "name"), cv_text("Result")))):
                 v_compatible = cv_bool((cv_equal(cv_subscript(cv_getkey(v_rt, "args"), 11), cv_subscript(cv_getkey(v_t, "args"), 11))))
             if not (cv_truth(v_compatible)):
-                cc_error(cv_text("? несовместим с типом результата функции"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_text("? несовместим с типом результата функции"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             cv_field(v_e, "wrapper_type", v_t)
             let payload: i64 = cv_at(cv_getkey(v_t, "args"), 0)
@@ -1984,18 +1987,18 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
             return payload
         if (cv_equal(cv_getkey(v_e, "op"), cv_text("-"))):
             if cv_classes(v_t, "TEnum"):
-                cc_error(cv_text("унарный '-' не поддерживает enum"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_text("унарный '-' не поддерживает enum"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             if (cv_classes(cv_getkey(v_e, "x"), "IntLit") and (cv_equal(cv_getkey(cv_getkey(v_e, "x"), "val"), cv_shl(11, 507)))):
                 return cc_int(CV_TRUE, 515)
             if (cv_classes(cv_getkey(v_e, "x"), "IntLit") and (cv_less(cv_shl(11, 507), cv_getkey(cv_getkey(v_e, "x"), "val")))):
-                cc_error(cv_text("целочисленный литерал выходит за диапазон i64"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_text("целочисленный литерал выходит за диапазон i64"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             if cv_truth(cc_is_int(v_t)):
                 return v_t
             if cv_truth(cc_is_float(v_t)):
                 return v_t
-            cc_error(cv_text("unary '-' требует число"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("unary '-' требует число"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         if (cv_equal(cv_getkey(v_e, "op"), cv_text("not"))):
             ccs_truthy_check(v_self, v_t, v_e)
@@ -2043,7 +2046,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
             cv_push(pieces_9, cv_text(", "))
             cv_push(pieces_9, cv_format(cc_display(v_r), ""))
             cv_push(pieces_9, cv_text(")"))
-            cc_error(cv_join(cv_text(""), pieces_9), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_9), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         let subject_10: i64 = cv_getkey(v_e, "op")
         if ((cv_equal(subject_10, cv_text("and")) or cv_equal(subject_10, cv_text("or")))):
@@ -2060,25 +2063,25 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
                 return cc_TBool()
             if v_cmp == CC_CMP_PTR: return cc_TBool()
             if cv_truth(cc_is_num(v_l)) and cv_truth(cc_is_num(v_r)):
-                cc_error(cv_text("сравнение int/float: приведите через as"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_text("сравнение int/float: приведите через as"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             if cv_truth(cc_is_ptr(v_l)) and cv_truth(cc_is_ptr(v_r)):
-                cc_error(cv_text("сравнение указателей разных типов"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_text("сравнение указателей разных типов"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             if ((cv_truth(cc_is_int(v_l)) and cv_truth(cc_is_ptr(v_r))) or (cv_truth(cc_is_ptr(v_l)) and cv_truth(cc_is_int(v_r)))):
-                cc_error(cv_text("сравнение указателя с числом не разрешено"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_text("сравнение указателя с числом не разрешено"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             let pieces_13: i64 = cv_list()
             cv_push(pieces_13, cv_text("несравнимые типы "))
             cv_push(pieces_13, cv_format(cc_display(v_l), ""))
             cv_push(pieces_13, cv_text(" и "))
             cv_push(pieces_13, cv_format(cc_display(v_r), ""))
-            cc_error(cv_join(cv_text(""), pieces_13), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_13), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         let subject_14: i64 = cv_getkey(v_e, "op")
         if ((cv_equal(subject_14, cv_text("+")) or cv_equal(subject_14, cv_text("-")) or cv_equal(subject_14, cv_text("*")) or cv_equal(subject_14, cv_text("/")) or cv_equal(subject_14, cv_text("%")) or cv_equal(subject_14, cv_text("&")) or cv_equal(subject_14, cv_text("|")) or cv_equal(subject_14, cv_text("^")) or cv_equal(subject_14, cv_text("<<")) or cv_equal(subject_14, cv_text(">>")))):
             if (cv_truth(cc_is_ptr(v_l)) and cv_truth(cc_is_ptr(v_r))):
-                cc_error(cv_text("указатель-указатель не разрешён"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_text("указатель-указатель не разрешён"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             if (cv_truth(cc_is_ptr(v_l)) and cv_truth(cc_is_int(v_r))):
                 let subject_15: i64 = cv_getkey(v_e, "op")
@@ -2087,7 +2090,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
                     cv_push(pieces_16, cv_text("'"))
                     cv_push(pieces_16, cv_format(cv_getkey(v_e, "op"), ""))
                     cv_push(pieces_16, cv_text("' с указателем не разрешён"))
-                    cc_error(cv_join(cv_text(""), pieces_16), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                    ccs_error(cv_join(cv_text(""), pieces_16), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                     return 0
                 ccs_require_unsafe(v_self, v_e, cv_text("арифметика raw-указателей"))
                 ccs_ensure_layout(v_self, cv_getkey(v_l, "elem"))
@@ -2099,7 +2102,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
                     cv_push(pieces_17, cv_text("'"))
                     cv_push(pieces_17, cv_format(cv_getkey(v_e, "op"), ""))
                     cv_push(pieces_17, cv_text("' с указателем не разрешён"))
-                    cc_error(cv_join(cv_text(""), pieces_17), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                    ccs_error(cv_join(cv_text(""), pieces_17), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                     return 0
                 ccs_require_unsafe(v_self, v_e, cv_text("арифметика raw-указателей"))
                 ccs_ensure_layout(v_self, cv_getkey(v_r, "elem"))
@@ -2116,13 +2119,13 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
                     cv_push(pieces_21, cv_text("операция '"))
                     cv_push(pieces_21, cv_format(cv_getkey(v_e, "op"), ""))
                     cv_push(pieces_21, cv_text("' требует целые"))
-                    cc_error(cv_join(cv_text(""), pieces_21), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                    ccs_error(cv_join(cv_text(""), pieces_21), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                     return 0
                 if (cv_truth(cc_is_ptr(v_l)) or cv_truth(cc_is_ptr(v_r))):
-                    cc_error(cv_text("битовые операции над указателями запрещены"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                    ccs_error(cv_text("битовые операции над указателями запрещены"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                     return 0
                 if (cv_truth(cc_is_bool(v_l)) or cv_truth(cc_is_bool(v_r))):
-                    cc_error(cv_text("битовые операции над bool не разрешены"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                    ccs_error(cv_text("битовые операции над bool не разрешены"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                     return 0
                 let subject_22: i64 = cv_getkey(v_e, "op")
                 if ((cv_equal(subject_22, cv_text("<<")) or cv_equal(subject_22, cv_text(">>")))):
@@ -2140,10 +2143,10 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
                 cv_push(pieces_24, cv_text(" и "))
                 cv_push(pieces_24, cv_format(cc_display(v_r), ""))
                 cv_push(pieces_24, cv_text(" недопустима"))
-                cc_error(cv_join(cv_text(""), pieces_24), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_24), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             if ((cv_truth(cc_is_int(v_l)) and cv_truth(cc_is_float(v_r))) or (cv_truth(cc_is_float(v_l)) and cv_truth(cc_is_int(v_r)))):
-                cc_error(cv_text("int и float в арифметике: приведите через as"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_text("int и float в арифметике: приведите через as"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             v_common = cc_num_widen(v_l, v_r)
             if (v_common == 0):
@@ -2153,10 +2156,10 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
                 cv_push(pieces_25, cv_text(" и "))
                 cv_push(pieces_25, cv_format(cc_display(v_r), ""))
                 cv_push(pieces_25, cv_text(" недопустима"))
-                cc_error(cv_join(cv_text(""), pieces_25), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_25), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             if ((cv_equal(cv_getkey(v_e, "op"), cv_text("%"))) and cv_truth(cc_is_float(v_common))):
-                cc_error(cv_text("% требует целые числа"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_text("% требует целые числа"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             cv_field(v_e, "common", v_common)
             return v_common
@@ -2168,7 +2171,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
         v_bt = ccs_tf(v_self, cv_getkey(v_e, "base"), 0)
         v_it = ccs_tf(v_self, cv_getkey(v_e, "idx"), 0)
         if (not (cv_truth(cc_is_int(v_it))) or cv_classes(v_it, "TEnum")):
-            cc_error(cv_text("индекс должен быть целым"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("индекс должен быть целым"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         ccs_want_indexable(v_self, cv_getkey(v_e, "base"), v_bt)
         if cv_truth(cc_is_array(v_bt)):
@@ -2190,7 +2193,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
         cv_push(pieces_26, cv_text("базу "))
         cv_push(pieces_26, cv_format(cc_display(v_bt), ""))
         cv_push(pieces_26, cv_text(" нельзя индексировать"))
-        cc_error(cv_join(cv_text(""), pieces_26), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_join(cv_text(""), pieces_26), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if cv_classes(v_e, "SliceExpr"):
         let v_base: i64 = cv_getkey(v_e, "base")
@@ -2216,13 +2219,13 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
             ccs_ensure_layout(v_self, cv_getkey(v_bt, "elem"))
             v_raw = true
         if v_owner == 0 and not v_raw:
-            cc_error(cv_text("slice source должен быть локальным массивом или неизменяемым slice с известным источником"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("slice source должен быть локальным массивом или неизменяемым slice с известным источником"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         let unpack_27: i64 = cv_pair(ccs_tf(v_self, cv_getkey(v_e, "start"), 0), ccs_tf(v_self, cv_getkey(v_e, "end"), 0))
         v_st = cv_at(unpack_27, 0)
         v_et = cv_at(unpack_27, 1)
         if (not (cv_truth(cc_is_int(v_st))) or not (cv_truth(cc_is_int(v_et))) or not (cv_truth(cv_getkey(v_st, "signed"))) or not (cv_truth(cv_getkey(v_et, "signed")))):
-            cc_error(cv_text("границы slice должны быть знаковыми целыми"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("границы slice должны быть знаковыми целыми"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         if cv_classes(v_bt, "TArray"):
             ccs_check_exclusive_owner(v_self, v_base)
@@ -2232,7 +2235,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
             let v_borrowed: i64 = cv_getkey(v_self, "borrowed_slots")
             if cv_truth(v_mutable):
                 if cv_contains(v_borrowed, v_owner):
-                    cc_error(cv_text("нельзя создать изменяемый slice: массив уже заимствован"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                    ccs_error(cv_text("нельзя создать изменяемый slice: массив уже заимствован"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                     return 0
                 cv_add_set(cv_getkey(v_self, "exclusive_slots"), v_owner)
             cv_add_set(v_borrowed, v_owner)
@@ -2260,12 +2263,12 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
                 cv_push(pieces_28, cv_format(cv_getkey(v_enum, "name"), ""))
                 cv_push(pieces_28, cv_text(": неизвестный вариант "))
                 cv_push(pieces_28, cv_format(cv_getkey(v_e, "field"), "r"))
-                cc_error(cv_join(cv_text(""), pieces_28), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_28), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             if cv_classes(v_enum, "TTaggedEnum"):
                 let variant: i64 = cv_getkey(v_e, "field")
                 if cv_has(cv_getkey(v_enum, "payloads"), variant):
-                    cc_error(cv_text("вариант enum требует один аргумент payload"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                    ccs_error(cv_text("вариант enum требует один аргумент payload"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                     return 0
                 cv_field(v_e, "kindt", cv_text("tagged_ctor"))
                 cv_field(v_e, "variant", cv_get(cv_getkey(v_enum, "values"), variant, 0))
@@ -2286,13 +2289,13 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
                 cv_push(pieces_29, cv_text(" у "))
                 cv_push(pieces_29, cv_format(cc_display(v_bt), ""))
                 cv_push(pieces_29, cv_text(" не поддерживается"))
-                cc_error(cv_join(cv_text(""), pieces_29), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_29), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
         else:
             v_st = v_bt
             cv_field(v_e, "tptr", CV_FALSE)
         if ccs_buffer_type(v_self, v_st, "BorrowBuffer") and not ccs_buffer_module_body(v_self):
-            cc_error(cv_text("BorrowBuffer: поле дескриптора недоступно"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("BorrowBuffer: поле дескриптора недоступно"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         ccs_opaque_access(v_st, file, line, "приватное поле struct")
         ccs_ensure_layout(v_self, v_st)
@@ -2313,15 +2316,15 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
         cv_push(pieces_33, cv_format(cv_getkey(v_e, "field"), "r"))
         cv_push(pieces_33, cv_text(" отсутствует в "))
         cv_push(pieces_33, cv_format(cc_display(v_st), ""))
-        cc_error(cv_join(cv_text(""), pieces_33), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_join(cv_text(""), pieces_33), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if cv_classes(v_e, "Cast"):
         v_ft = ccs_tf(v_self, cv_getkey(v_e, "x"), 0)
         v_tt = ccs_resolve_type(v_self, cv_getkey(v_e, "texpr"), CV_FALSE)
         if cc_is_owned(v_ft) or cc_is_owned(v_tt) or cc_is_owned_ptr(v_ft) or cc_is_owned_ptr(v_tt):
-            cc_error(cv_text("приведение OwnedBuffer и его адреса запрещено"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("приведение OwnedBuffer и его адреса запрещено"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         if cc_is_mut_slice(v_ft) or cc_is_mut_slice(v_tt):
-            cc_error(cv_text("приведение изменяемого slice запрещено"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("приведение изменяемого slice запрещено"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         let choice_34: i64 = cc_is_ptr(v_tt)
         if cv_truth(choice_34):
@@ -2339,7 +2342,7 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
     if cv_classes(v_e, "Deref"):
         v_bt = ccs_tf(v_self, cv_getkey(v_e, "x"), 0)
         if not (cv_truth(cc_is_ptr(v_bt))):
-            cc_error(cv_cat(cv_text("* требует указатель, получен "), cv_format(cc_display(v_bt), "")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_cat(cv_text("* требует указатель, получен "), cv_format(cc_display(v_bt), "")), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         ccs_require_unsafe(v_self, v_e, cv_text("разыменование raw-указателя"))
         ccs_ensure_layout(v_self, cv_getkey(v_bt, "elem"))
@@ -2347,51 +2350,51 @@ unsafe fn ccs_typeof(v_self: i64, v_e: i64) -> i64:
     if cv_classes(v_e, "AddrOf"):
         v_t = ccs_tf(v_self, cv_getkey(v_e, "x"), 0)
         if cv_classes(v_t, "TWrapper"):
-            cc_error(cv_text("ptr не может скрывать Option/Result"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("ptr не может скрывать Option/Result"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         if cv_classes(v_t, "TTaggedEnum"):
-            cc_error(cv_text("ptr не может скрывать enum с payload"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("ptr не может скрывать enum с payload"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         ccs_want_lvalue_node(v_self, cv_getkey(v_e, "x"), v_t)
         if cc_is_mut_slice(v_t):
-            cc_error(cv_text("нельзя взять адрес дескриптора изменяемого slice"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("нельзя взять адрес дескриптора изменяемого slice"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         let v_place: i64 = ccs_borrow_base(cv_getkey(v_e, "x"))
         if cv_classes(cv_getkey(v_place, "type"), "TSlice"):
             ccs_require_unsafe(v_self, v_e, cv_text("взятие raw-адреса slice"))
         return cc_TPtr(v_t)
     if cv_classes(v_e, "ArrayLit"):
-        cc_error(cv_text("список массивов нельзя вычислять как значение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("список массивов нельзя вычислять как значение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if cv_classes(v_e, "StructLit"):
-        cc_error(cv_text("переменная структуры не выражение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("переменная структуры не выражение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
-    cc_error(cv_add(cv_text("неизвестный узел "), cv_typename(v_e)), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+    ccs_error(cv_add(cv_text("неизвестный узел "), cv_typename(v_e)), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
     return 0
 
 unsafe fn ccs_truthy_check(v_self: i64, v_t: i64, v_e: i64) -> i64:
     if v_t == 0:
-        cc_error(cv_text("void нельзя использовать как условие"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("void нельзя использовать как условие"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if cv_classes(v_t, "TWrapper"):
-        cc_error(cv_text("Option/Result в условии всегда истинен (адрес); используйте match или postfix ?"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("Option/Result в условии всегда истинен (адрес); используйте match или postfix ?"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if cv_classes(v_t, "TTaggedEnum"):
-        cc_error(cv_text("enum с payload нельзя использовать в условии; используйте match"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("enum с payload нельзя использовать в условии; используйте match"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if (cv_truth(cc_is_struct(v_t)) or cv_truth(cc_is_array(v_t))):
         let pieces_1: i64 = cv_list()
         cv_push(pieces_1, cv_text("условие из "))
         cv_push(pieces_1, cv_format(cc_display(v_t), ""))
         cv_push(pieces_1, cv_text(" не имеет смысла"))
-        cc_error(cv_join(cv_text(""), pieces_1), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_join(cv_text(""), pieces_1), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     return 0
 
 unsafe fn ccs_want_indexable(v_self: i64, v_base: i64, v_bt: i64) -> i64:
     if (cv_truth(cc_is_array(v_bt)) or cv_truth(cc_is_ptr(v_bt)) or cv_truth(cc_is_string(v_bt)) or cv_classes(v_bt, "TSlice")):
         return 0
-    cc_error(cv_cat(cv_format(cc_display(v_bt), ""), cv_text(" не индексируется")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_base, "line"))
+    ccs_error(cv_cat(cv_format(cc_display(v_bt), ""), cv_text(" не индексируется")), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_base)
     return 0
 
 unsafe fn ccs_want_lvalue_node(v_self: i64, v_e: i64, v_t: i64) -> i64:
@@ -2399,14 +2402,14 @@ unsafe fn ccs_want_lvalue_node(v_self: i64, v_e: i64, v_t: i64) -> i64:
         return 0
     if cv_classes(v_e, "Member"):
         if cv_has(v_e, cv_text("enum_value")):
-            cc_error(cv_text("вариант enum нельзя изменить или взять по адресу"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("вариант enum нельзя изменить или взять по адресу"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         return 0
     if cv_classes(v_e, "Index"):
         return 0
     if cv_classes(v_e, "Deref"):
         return 0
-    cc_error(cv_text("нельзя взять адрес этого выражения"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+    ccs_error(cv_text("нельзя взять адрес этого выражения"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
     return 0
 
 unsafe fn ccs_chk_cast(v_self: i64, v_a: i64, v_b: i64, v_e: i64, v_explicit: i64) -> i64:
@@ -2420,7 +2423,7 @@ unsafe fn ccs_chk_cast(v_self: i64, v_a: i64, v_b: i64, v_e: i64, v_explicit: i6
         cv_push(pieces_1, cv_format(cc_display(v_a), ""))
         cv_push(pieces_1, cv_text(" к "))
         cv_push(pieces_1, cv_format(cc_display(v_b), ""))
-        cc_error(cv_join(cv_text(""), pieces_1), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_join(cv_text(""), pieces_1), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if (cv_classes(v_a, "TEnum") or cv_classes(v_b, "TEnum")):
         if (cv_truth(v_explicit) and cv_classes(v_a, "TEnum") and not (cv_classes(v_b, "TEnum")) and cv_truth(cc_is_int(v_b))):
@@ -2430,7 +2433,7 @@ unsafe fn ccs_chk_cast(v_self: i64, v_a: i64, v_b: i64, v_e: i64, v_explicit: i6
         cv_push(pieces_2, cv_format(cc_display(v_a), ""))
         cv_push(pieces_2, cv_text(" к "))
         cv_push(pieces_2, cv_format(cc_display(v_b), ""))
-        cc_error(cv_join(cv_text(""), pieces_2), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_join(cv_text(""), pieces_2), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if (cv_truth(cc_is_num(v_a)) and cv_truth(cc_is_num(v_b))):
         return CV_TRUE
@@ -2448,7 +2451,7 @@ unsafe fn ccs_chk_cast(v_self: i64, v_a: i64, v_b: i64, v_e: i64, v_explicit: i6
     cv_push(pieces_3, cv_format(cc_display(v_a), ""))
     cv_push(pieces_3, cv_text(" к "))
     cv_push(pieces_3, cv_format(cc_display(v_b), ""))
-    cc_error(cv_join(cv_text(""), pieces_3), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+    ccs_error(cv_join(cv_text(""), pieces_3), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
     return 0
 
 unsafe fn ccs_is_callback_builtin(v_self: i64, v_name: i64) -> i64:
@@ -2473,12 +2476,12 @@ unsafe fn ccs_check_mut_slice_args(v_self: i64, v_e: i64):
         if cv_classes(v_arg, "SliceExpr"): continue
         let v_slot: i64 = cv_getkey(v_arg, "slot")
         if not cv_classes(v_arg, "VarRef") or v_slot == 0:
-            cc_error(cv_text("аргумент []mut должен быть именем изменяемого slice или диапазоном локального массива"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
+            ccs_error(cv_text("аргумент []mut должен быть именем изменяемого slice или диапазоном локального массива"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arg)
         if cv_contains(cv_getkey(v_self, "frozen_mut_slots"), v_slot):
-            cc_error(cv_text("изменяемый slice нельзя передать как []mut, пока из него создан slice на чтение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
+            ccs_error(cv_text("изменяемый slice нельзя передать как []mut, пока из него создан slice на чтение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arg)
         for j in 0..i:
             if cv_getkey(cv_at(v_args, j), "slot") == v_slot:
-                cc_error(cv_text("изменяемый slice нельзя передать дважды в один вызов"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
+                ccs_error(cv_text("изменяемый slice нельзя передать дважды в один вызов"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arg)
 
 unsafe fn ccs_note_temp_slice_args(v_self: i64, v_e: i64, v_loan_mark: i64, v_freeze_mark: i64):
     # A slice expression written directly in argument position borrows its owner
@@ -2540,7 +2543,7 @@ unsafe fn ccs_bind_slice_call_result(v_self: i64, v_e: i64, v_fn: i64):
         if cv_classes(v_arg, "AddrOf") and cv_classes(cv_getkey(v_arg, "x"), "VarRef"):
             v_owner_slot = cv_getkey(cv_getkey(v_arg, "x"), "slot")
         if v_owner_slot == 0 or not cc_is_owned(cv_getkey(v_owner_slot, "typ")):
-            cc_error(cv_text("аргумент from должен быть адресом локального владельца"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
+            ccs_error(cv_text("аргумент from должен быть адресом локального владельца"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arg)
             return
         cv_field(v_e, "slice_origin", v_owner_slot)
         cv_field(v_e, "owner_slice_borrow", v_owner_slot)
@@ -2548,7 +2551,7 @@ unsafe fn ccs_bind_slice_call_result(v_self: i64, v_e: i64, v_fn: i64):
     let v_origin: i64 = ccs_slice_origin(v_arg)
     # A view of an array must still be backed by the caller's lexical owner loan.
     if v_origin == 0 or (cv_classes(cv_getkey(v_origin, "typ"), "TArray") and not cv_contains(cv_getkey(v_self, "borrowed_slots"), v_origin)):
-        cc_error(cv_text("аргумент from должен быть неизменяемым slice с известным источником"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
+        ccs_error(cv_text("аргумент from должен быть неизменяемым slice с известным источником"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arg)
         return
     cv_field(v_e, "slice_origin", v_origin)
 
@@ -2686,12 +2689,12 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
     if cv_truth(ccs_is_callback_builtin(v_self, v_name)):
         ccs_require_unsafe(v_self, v_e, cv_text("callback"))
         if ((not (cv_equal(cv_length(cv_getkey(v_e, "args")), 11))) or not (cv_classes(cv_subscript(cv_getkey(v_e, "args"), 3), "VarRef"))):
-            cc_error(cv_text("callback ожидает имя функции VOLT"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("callback ожидает имя функции VOLT"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         let callback_name: i64 = ccs_module_name(v_self, cv_getkey(cv_at(cv_getkey(v_e, "args"), 0), "name"), file, line)
         v_target = cv_get(cv_getkey(v_self, "fns"), callback_name, 0)
         if ((v_target == 0) or (cv_getkey(v_target, "body") == 0) or (not (cv_getkey(v_target, "native") == 0))):
-            cc_error(cv_text("callback ожидает обычную необобщённую функцию VOLT"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("callback ожидает обычную необобщённую функцию VOLT"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         let collect_1: i64 = cv_vector(CV_LIST)
         let seq_3: i64 = cv_getkey(v_target, "sig_params")
@@ -2704,7 +2707,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
         return v_signature
     if ((cv_equal(v_name, cv_text("Some")) or cv_equal(v_name, cv_text("Ok")) or cv_equal(v_name, cv_text("Err")))):
         if (not (cv_equal(cv_length(cv_getkey(v_e, "args")), 11))):
-            cc_error(cv_cat(cv_format(v_name, ""), cv_text(": ожидается один payload")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_cat(cv_format(v_name, ""), cv_text(": ожидается один payload")), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         v_hint = cv_get(v_e, cv_text("context_type"), 0)
         if cv_classes(v_hint, "TWrapper"):
@@ -2721,7 +2724,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
             cv_push(pieces_8, cv_format(v_name, ""))
             cv_push(pieces_8, cv_text(": недопустимый тип payload "))
             cv_push(pieces_8, cv_format(cc_display(v_payload), ""))
-            cc_error(cv_join(cv_text(""), pieces_8), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_8), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         if (cv_equal(v_name, cv_text("Some"))):
             let choice_9: i64 = 0
@@ -2738,7 +2741,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                 cv_push(pieces_11, cv_format(cc_display(v_payload), ""))
                 cv_push(pieces_11, cv_text(" вместо "))
                 cv_push(pieces_11, cv_format(cc_display(cv_subscript(cv_getkey(v_result, "args"), 3)), ""))
-                cc_error(cv_join(cv_text(""), pieces_11), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_11), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             cv_field(v_e, "kindt", cv_text("wrapper_ctor"))
             cv_field(v_e, "variant", 11)
@@ -2746,7 +2749,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
         if (not (cv_classes(v_hint, "TWrapper")) or (not (cv_equal(cv_getkey(v_hint, "name"), cv_text("Result"))))):
             v_propagation_hint = cv_get(v_e, cv_text("propagation_context"), 0)
             if (not (cv_classes(v_propagation_hint, "TWrapper")) or (not (cv_equal(cv_getkey(v_propagation_hint, "name"), cv_text("Result"))))):
-                cc_error(cv_cat(cv_format(v_name, ""), cv_text(" требует контекста Result<T, E>")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_cat(cv_format(v_name, ""), cv_text(" требует контекста Result<T, E>")), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             let choice_12: i64 = 0
             if (cv_equal(v_name, cv_text("Ok"))):
@@ -2761,7 +2764,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                 cv_push(pieces_13, cv_format(cc_display(v_payload), ""))
                 cv_push(pieces_13, cv_text(" вместо "))
                 cv_push(pieces_13, cv_format(cc_display(v_expected), ""))
-                cc_error(cv_join(cv_text(""), pieces_13), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_13), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
                 return 0
             cv_field(v_e, "kindt", cv_text("wrapper_ctor"))
             let choice_14: i64 = 0
@@ -2784,7 +2787,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
             cv_push(pieces_16, cv_format(cc_display(v_payload), ""))
             cv_push(pieces_16, cv_text(" вместо "))
             cv_push(pieces_16, cv_format(cc_display(v_expected), ""))
-            cc_error(cv_join(cv_text(""), pieces_16), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_16), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         cv_field(v_e, "kindt", cv_text("wrapper_ctor"))
         let choice_17: i64 = 0
@@ -2797,7 +2800,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
     if (cv_equal(v_name, cv_text("None"))):
         v_hint = cv_get(v_e, cv_text("context_type"), 0)
         if (not (cv_classes(v_hint, "TWrapper")) or (not (cv_equal(cv_getkey(v_hint, "name"), cv_text("Option"))))):
-            cc_error(cv_text("None требует контекста Option<T>"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("None требует контекста Option<T>"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         cv_field(v_e, "kindt", cv_text("wrapper_ctor"))
         cv_field(v_e, "variant", 3)
@@ -2816,7 +2819,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
             cv_push(pieces_18, cv_text(" значений вместо "))
             cv_push(pieces_18, cv_format(cv_length(cv_getkey(v_definition, "fields")), ""))
             cv_push(pieces_18, cv_text(" полей"))
-            cc_error(cv_join(cv_text(""), pieces_18), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_18), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         v_sd = cv_get(v_e, cv_text("context_type"), 0)
         v_inferred = CV_FALSE
@@ -2857,7 +2860,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                 cv_push(pieces_31, cv_text("."))
                 cv_push(pieces_31, cv_format(v_fn_, ""))
                 cv_push(pieces_31, cv_text(": для аргумента требуется значение"))
-                cc_error(cv_join(cv_text(""), pieces_31), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_31), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                 return 0
             if not (cv_truth(cc_can_assign(v_at, v_ft))):
                 let pieces_32: i64 = cv_list()
@@ -2868,7 +2871,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                 cv_push(pieces_32, cv_format(cc_display(v_at), ""))
                 cv_push(pieces_32, cv_text(" вместо "))
                 cv_push(pieces_32, cv_format(cc_display(v_ft), ""))
-                cc_error(cv_join(cv_text(""), pieces_32), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_32), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                 return 0
         cv_field(v_e, "kindt", cv_text("ctor"))
         return v_sd
@@ -2896,7 +2899,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                 cv_push(pieces_37, cv_format(cc_display(cv_getkey(v_arg, "type")), ""))
                 cv_push(pieces_37, cv_text(" вместо "))
                 cv_push(pieces_37, cv_format(cc_display(v_param_type), ""))
-                cc_error(cv_join(cv_text(""), pieces_37), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arg, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_37), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arg)
                 return 0
             if (cv_truth(cc_is_struct(cv_getkey(v_arg, "type"))) and (cv_equal(cv_get(v_arg, cv_text("kindt"), 0), cv_text("ctor")))):
                 cv_field(v_arg, "temp_slot", ccs_declare_temp(v_self, cv_getkey(v_arg, "type"), cv_getkey(v_arg, "line")))
@@ -2915,7 +2918,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
             cv_push(pieces_38, cv_format(cv_length(cv_getkey(v_e, "args")), ""))
             cv_push(pieces_38, cv_text(" аргумента вместо "))
             cv_push(pieces_38, cv_format(cv_length(cv_getkey(v_fn, "params")), ""))
-            cc_error(cv_join(cv_text(""), pieces_38), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_38), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         let seq_40: i64 = cv_zip(cv_getkey(v_e, "args"), cv_getkey(v_fn, "sig_params"))
         for index_39 in 0..cv_len(seq_40):
@@ -2933,7 +2936,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
             v_at = ccs_tf(v_self, v_a, v_pt)
             if cv_classes(v_pt, "TWrapper"):
                 if ((not (cv_getkey(v_fn, "native") == 0)) or (cv_getkey(v_fn, "body") == 0)):
-                    cc_error(cv_text("Option/Result параметры запрещены в extern/native"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                    ccs_error(cv_text("Option/Result параметры запрещены в extern/native"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                     return 0
                 if (not (cv_equal(v_at, v_pt))):
                     let pieces_45: i64 = cv_list()
@@ -2944,7 +2947,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                     cv_push(pieces_45, cv_format(cc_display(v_at), ""))
                     cv_push(pieces_45, cv_text(" вместо "))
                     cv_push(pieces_45, cv_format(cc_display(v_pt), ""))
-                    cc_error(cv_join(cv_text(""), pieces_45), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                    ccs_error(cv_join(cv_text(""), pieces_45), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                     return 0
                 if cv_name(cv_getkey(v_a, "kindt"), "wrapper_ctor") and cv_getkey(v_a, "temp_slot") == 0:
                     cv_field(v_a, "temp_slot", ccs_declare_temp(v_self, v_at, cv_getkey(v_a, "line")))
@@ -2963,7 +2966,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                     cv_push(pieces_46, cv_format(cc_display(v_at), ""))
                     cv_push(pieces_46, cv_text(" вместо "))
                     cv_push(pieces_46, cv_format(cc_display(v_pt), ""))
-                    cc_error(cv_join(cv_text(""), pieces_46), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                    ccs_error(cv_join(cv_text(""), pieces_46), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                     return 0
                 else:
                     if (cv_truth(cc_is_num(v_at)) and cv_truth(cc_is_num(v_pt))):
@@ -2977,10 +2980,10 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                         cv_push(pieces_47, cv_format(cc_display(v_at), ""))
                         cv_push(pieces_47, cv_text(" вместо "))
                         cv_push(pieces_47, cv_format(cc_display(v_pt), ""))
-                        cc_error(cv_join(cv_text(""), pieces_47), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                        ccs_error(cv_join(cv_text(""), pieces_47), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                         return 0
         if (cv_classes(cv_getkey(v_fn, "sig_ret"), "TWrapper") and ((not (cv_getkey(v_fn, "native") == 0)) or (cv_getkey(v_fn, "body") == 0))):
-            cc_error(cv_text("Option/Result результаты запрещены в extern/native"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("Option/Result результаты запрещены в extern/native"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         if cv_truth(cc_is_struct(cv_getkey(v_fn, "sig_ret"))):
             cv_field(v_e, "temp_slot", ccs_declare_temp(v_self, cv_getkey(v_fn, "sig_ret"), cv_getkey(v_e, "line")))
@@ -3002,7 +3005,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
             cv_push(pieces_49, cv_format(cv_length(cv_getkey(v_e, "args")), ""))
             cv_push(pieces_49, cv_text(" аргумента(ов), ожидалось "))
             cv_push(pieces_49, cv_format(cv_length(v_kinds), ""))
-            cc_error(cv_join(cv_text(""), pieces_49), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_49), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         let seq_51: i64 = cv_enumerate(cv_zip(cv_getkey(v_e, "args"), v_kinds))
         for index_50 in 0..cv_len(seq_51):
@@ -3019,7 +3022,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                     cv_push(pieces_54, cv_text(": аргумент "))
                     cv_push(pieces_54, cv_format(cv_add(v_i, 11), ""))
                     cv_push(pieces_54, cv_text(" должен быть целым"))
-                    cc_error(cv_join(cv_text(""), pieces_54), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                    ccs_error(cv_join(cv_text(""), pieces_54), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                     return 0
             else:
                 if (cv_equal(v_k, cv_text("f"))):
@@ -3029,7 +3032,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                         cv_push(pieces_55, cv_text(": аргумент "))
                         cv_push(pieces_55, cv_format(cv_add(v_i, 11), ""))
                         cv_push(pieces_55, cv_text(" должен быть float"))
-                        cc_error(cv_join(cv_text(""), pieces_55), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                        ccs_error(cv_join(cv_text(""), pieces_55), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                         return 0
                 else:
                     if (cv_equal(v_k, cv_text("p"))):
@@ -3041,7 +3044,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                             cv_push(pieces_56, cv_text(": аргумент "))
                             cv_push(pieces_56, cv_format(cv_add(v_i, 11), ""))
                             cv_push(pieces_56, cv_text(" должен быть ptr<char>"))
-                            cc_error(cv_join(cv_text(""), pieces_56), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                            ccs_error(cv_join(cv_text(""), pieces_56), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                             return 0
                         ccs_require_unsafe(v_self, v_a, cv_cat(cv_text("передача raw-указателя в "), cv_format(v_name, "")))
                     else:
@@ -3052,7 +3055,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                                 cv_push(pieces_57, cv_text(": аргумент "))
                                 cv_push(pieces_57, cv_format(cv_add(v_i, 11), ""))
                                 cv_push(pieces_57, cv_text(" должен быть числом"))
-                                cc_error(cv_join(cv_text(""), pieces_57), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                                ccs_error(cv_join(cv_text(""), pieces_57), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                                 return 0
                         else:
                             if (cv_equal(v_k, cv_text("a"))):
@@ -3062,7 +3065,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                                     cv_push(pieces_58, cv_text(": аргумент "))
                                     cv_push(pieces_58, cv_format(cv_add(v_i, 11), ""))
                                     cv_push(pieces_58, cv_text(" должен быть массивом или slice"))
-                                    cc_error(cv_join(cv_text(""), pieces_58), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                                    ccs_error(cv_join(cv_text(""), pieces_58), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                                     return 0
                                 if cv_name(v_name, "len") and cv_classes(v_at, "TArray"): ccs_prepare_array_length(v_self, v_a)
         if ((cv_equal(v_name, cv_text("abs")) or cv_equal(v_name, cv_text("min")) or cv_equal(v_name, cv_text("max")))):
@@ -3084,7 +3087,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                         cv_push(pieces_60, cv_text(" и "))
                         cv_push(pieces_60, cv_format(cc_display(v_tb), ""))
                         cv_push(pieces_60, cv_text(" несовместимы"))
-                        cc_error(cv_join(cv_text(""), pieces_60), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                        ccs_error(cv_join(cv_text(""), pieces_60), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                         return 0
                     cv_field(v_e, "common_w", v_common)
                 else:
@@ -3095,7 +3098,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                     cv_push(pieces_61, cv_text(" и "))
                     cv_push(pieces_61, cv_format(cc_display(v_tb), ""))
                     cv_push(pieces_61, cv_text(" несовместимы"))
-                    cc_error(cv_join(cv_text(""), pieces_61), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                    ccs_error(cv_join(cv_text(""), pieces_61), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                     return 0
             else:
                 cv_field(v_e, "common_w", 0)
@@ -3110,8 +3113,10 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
         if (cv_equal(v_ret, cv_text("n"))):
             return cv_getkey(cv_subscript(cv_getkey(v_e, "args"), 3), "type")
         if (v_ret == 0):
+            if cv_name(v_label, "VOLT_rt_panic") or cv_name(v_label, "VOLT_rt_exit"):
+                cv_field(v_e, "no_return", CV_TRUE)
             return 0
-        cc_error(cv_text("внутр: неизвестный ret-код"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("внутр: неизвестный ret-код"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if (cv_equal(v_name, cv_text("print"))):
         let seq_63: i64 = cv_getkey(v_e, "args")
@@ -3134,7 +3139,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
                 choice_64 = choice_65
             v_ok = choice_64
             if not (cv_truth(v_ok)):
-                cc_error(cv_cat(cv_text("print не поддерживает тип "), cv_format(cc_display(v_at), "")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_a, "line"))
+                ccs_error(cv_cat(cv_text("print не поддерживает тип "), cv_format(cc_display(v_at), "")), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_a)
                 return 0
             if cv_truth(cc_is_ptr(v_at)):
                 ccs_require_unsafe(v_self, v_a, cv_text("печать raw-указателя"))
@@ -3142,7 +3147,7 @@ unsafe fn ccs_t_call(v_self: i64, v_e: i64) -> i64:
     # Keep existing functions, constructors and builtins ahead of local call targets.
     let slot: i64 = ccs_find_slot(v_self, v_name)
     if slot != 0: return ccs_t_indirect_call(v_self, v_e, slot)
-    cc_error(cv_cat(cv_text("неизвестная функция "), cv_format(v_name, "r")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+    ccs_error(cv_cat(cv_text("неизвестная функция "), cv_format(v_name, "r")), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
     return 0
 
 unsafe fn ccs_buffer_function(v_self: i64, v_name: i64) -> bool:
@@ -3288,7 +3293,7 @@ unsafe fn ccs_const_lookup(v_self: i64, v_name: i64) -> i64:
 
 unsafe fn ccs_typecheck_defer_action(v_self: i64, v_st: i64) -> i64:
     if not (cv_classes(v_st, "AssignStmt") or cv_classes(v_st, "ExprStmt")):
-        cc_error(cv_text("defer допускает только простой оператор без flow-control или вложенного defer"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+        ccs_error(cv_text("defer допускает только простой оператор без flow-control или вложенного defer"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
         return 0
     # Loans created by the deferred action stay until block exit, so temporary
     # slice arguments inside it must not be scheduled for statement-end release.
@@ -3331,7 +3336,7 @@ unsafe fn cc_check_expr(v_self: i64, v_defer: i64, v_expr: i64) -> i64:
             cv_push(pieces_1, cv_text("defer использует локальную переменную "))
             cv_push(pieces_1, cv_format(cv_getkey(v_expr, "name"), ""))
             cv_push(pieces_1, cv_text(", объявленную после defer"))
-            cc_error(cv_join(cv_text(""), pieces_1), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_expr, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_1), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_expr)
             return 0
         let choice_2: i64 = 0
         if cv_classes(v_slot_id, "SlotK"):
@@ -3351,14 +3356,14 @@ unsafe fn cc_check_expr(v_self: i64, v_defer: i64, v_expr: i64) -> i64:
             cv_push(pieces_4, cv_text("defer использует локальную переменную "))
             cv_push(pieces_4, cv_format(cv_getkey(v_expr, "name"), ""))
             cv_push(pieces_4, cv_text(", объявленную после defer"))
-            cc_error(cv_join(cv_text(""), pieces_4), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_expr, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_4), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_expr)
             return 0
         if ((v_slot == 0) and (not (cv_contains(cv_getkey(v_defer, "defer_visible_names"), cv_getkey(v_expr, "name")))) and (not (cv_contains(cv_getkey(v_self, "fn_param_names"), cv_getkey(v_expr, "name")))) and (not (cv_contains(cv_getkey(v_self, "const_globals"), cv_getkey(v_expr, "name")))) and (not (cv_contains(cv_getkey(v_self, "globals"), cv_getkey(v_expr, "name"))))):
             let pieces_5: i64 = cv_list()
             cv_push(pieces_5, cv_text("defer использует имя "))
             cv_push(pieces_5, cv_format(cv_getkey(v_expr, "name"), ""))
             cv_push(pieces_5, cv_text(", не видимое в точке defer"))
-            cc_error(cv_join(cv_text(""), pieces_5), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_expr, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_5), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_expr)
             return 0
     else:
         if cv_classes(v_expr, "Unary"):
@@ -3495,7 +3500,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
             let s_32: i64 = cv_at(seq_31, index_30)
             cv_push(collect_29, cv_bool((not (cv_equal(cv_getkey(s_32, "kind"), cv_text("temp"))))))
         if cv_truth(cv_any(collect_29)):
-            cc_error(cv_text("deferred action не может объявлять локальные переменные"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("deferred action не может объявлять локальные переменные"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         ccs_validate_defer_reads(v_self, v_st)
         cv_push(cv_subscript(cv_getkey(v_self, "defer_stack"), cv_neg(11)), v_st)
@@ -3506,14 +3511,14 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
             cv_push(pieces_33, cv_text("имя "))
             cv_push(pieces_33, cv_format(cv_getkey(v_st, "name"), ""))
             cv_push(pieces_33, cv_text(" объявлено дважды в этой области видимости"))
-            cc_error(cv_join(cv_text(""), pieces_33), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_33), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         if (cv_getkey(v_st, "init") == 0):
-            cc_error(cv_text("const требует инициализатор"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("const требует инициализатор"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         if (cv_classes(cv_getkey(v_st, "init"), "Call") or cv_classes(cv_getkey(v_st, "init"), "VarRef")):
             if cv_classes(cv_getkey(v_st, "init"), "Call"):
-                cc_error(cv_text("const требует константное выражение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_text("const требует константное выражение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
         v_typ = ccs_tf(v_self, cv_getkey(v_st, "init"), 0)
         let choice_34: i64 = 0
@@ -3530,13 +3535,13 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
             cv_push(pieces_35, cv_format(cc_display(v_typ), ""))
             cv_push(pieces_35, cv_text(" нельзя присвоить "))
             cv_push(pieces_35, cv_format(cc_display(v_want), ""))
-            cc_error(cv_join(cv_text(""), pieces_35), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_join(cv_text(""), pieces_35), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         if cv_classes(v_want, "TWrapper"):
-            cc_error(cv_text("Option/Result нельзя использовать в const"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("Option/Result нельзя использовать в const"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         if (cv_truth(cc_is_array(v_want)) or cv_truth(cc_is_struct(v_want)) or cv_truth(cc_is_ptr(v_want)) or cv_truth(cc_is_string(v_want)) or cv_classes(v_want, "TFnPtr") or cv_classes(v_want, "TTaggedEnum")):
-            cc_error(cv_text("const поддерживает только скалярные типы"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("const поддерживает только скалярные типы"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         v_value = ccs_fold_const(v_self, cv_getkey(v_st, "init"))
         if cv_truth(cc_is_int(v_want)):
@@ -3545,7 +3550,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
             v_lo = cv_at(unpack_36, 0)
             v_hi = cv_at(unpack_36, 1)
             if ((cv_less(v_value, v_lo)) or (cv_less(v_hi, v_value))):
-                cc_error(cv_text("целочисленное переполнение в const"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_text("целочисленное переполнение в const"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
         else:
             if cv_truth(cc_is_float(v_want)):
@@ -3568,15 +3573,15 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
         cv_field(v_st, "init_t", 0)
         if (cv_getkey(v_st, "init") == 0):
             if (cv_getkey(v_st, "typ") == 0):
-                cc_error(cv_text("let без типа требует = значение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_text("let без типа требует = значение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
             v_typ = ccs_resolve_type(v_self, cv_getkey(v_st, "typ"), CV_FALSE)
             ccs_default_access(v_typ, cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
             if cv_classes(v_typ, "TTaggedEnum"):
-                cc_error(cv_text("enum с payload требует явного конструктора или инициализатора"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_text("enum с payload требует явного конструктора или инициализатора"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
             if cv_classes(v_typ, "TSlice"):
-                cc_error(cv_text("slice требует инициализатор"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_text("slice требует инициализатор"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
             if (cv_truth(cc_is_array(v_typ)) or cv_truth(cc_is_struct(v_typ))):
                 if cv_truth(cc_is_array(v_typ)):
@@ -3593,7 +3598,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                 if (not (cv_getkey(v_st, "typ") == 0)):
                     v_bold = ccs_resolve_type(v_self, cv_getkey(v_st, "typ"), CV_FALSE)
                     if not (cv_truth(cc_is_array(v_bold))):
-                        cc_error(cv_text("объявлен не-массив, а передан список"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("объявлен не-массив, а передан список"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                         return 0
                     v_elem = cv_getkey(v_bold, "elem")
                     v_n = cv_getkey(v_bold, "n")
@@ -3607,7 +3612,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                             cv_push(pieces_39, cv_format(cc_display(v_init_t), ""))
                             cv_push(pieces_39, cv_text(" не совпадает с "))
                             cv_push(pieces_39, cv_format(cc_display(v_bold), ""))
-                            cc_error(cv_join(cv_text(""), pieces_39), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                            ccs_error(cv_join(cv_text(""), pieces_39), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                             return 0
                     else:
                         if (cv_less(v_n, cv_length(v_items))):
@@ -3616,7 +3621,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                             cv_push(pieces_40, cv_format(cv_length(v_items), ""))
                             cv_push(pieces_40, cv_text(" элементов для массива длины "))
                             cv_push(pieces_40, cv_format(v_n, ""))
-                            cc_error(cv_join(cv_text(""), pieces_40), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                            ccs_error(cv_join(cv_text(""), pieces_40), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                             return 0
                         if cv_less(cv_length(v_items), v_n):
                             ccs_default_access(v_elem, cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
@@ -3630,7 +3635,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                                 cv_push(pieces_43, cv_format(cc_display(v_at), ""))
                                 cv_push(pieces_43, cv_text(" вместо "))
                                 cv_push(pieces_43, cv_format(cc_display(v_elem), ""))
-                                cc_error(cv_join(cv_text(""), pieces_43), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_it, "line"))
+                                ccs_error(cv_join(cv_text(""), pieces_43), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_it)
                                 return 0
                             if (cv_truth(cc_is_struct(v_elem)) and cv_classes(v_it, "Call") and (cv_equal(cv_get(v_it, cv_text("kindt"), 0), cv_text("ctor"))) and (cv_get(v_it, cv_text("temp_slot"), 0) == 0)):
                                 cv_field(v_it, "temp_slot", ccs_declare_temp(v_self, v_elem, cv_getkey(v_it, "line")))
@@ -3640,16 +3645,16 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                         cv_field(v_st, "aitems", v_items)
                 else:
                     if not (cv_truth(v_items)):
-                        cc_error(cv_text("пустой массив не имеет разрешённого типа"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("пустой массив не имеет разрешённого типа"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                         return 0
                     v_elem = ccs_tf(v_self, cv_subscript(v_items, 3), 0)
                     if cc_is_owned(v_elem) or cc_is_owned_ptr(v_elem):
-                        cc_error(cv_text("OwnedBuffer и его адрес нельзя хранить в массиве"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("OwnedBuffer и его адрес нельзя хранить в массиве"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                     if cv_classes(v_elem, "TSlice"):
-                        cc_error(cv_text("slice нельзя хранить в массиве"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("slice нельзя хранить в массиве"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                         return 0
                     if cv_truth(cc_contains_tagged_type(v_elem)):
-                        cc_error(cv_text("Option/Result нельзя помещать в массив (как и enum с payload)"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("Option/Result нельзя помещать в массив (как и enum с payload)"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                         return 0
                     let seq_45: i64 = cv_slice(v_items, 11, 0)
                     for index_44 in 0..cv_len(seq_45):
@@ -3661,7 +3666,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                             cv_push(pieces_46, cv_format(cc_display(v_at), ""))
                             cv_push(pieces_46, cv_text(" вместо "))
                             cv_push(pieces_46, cv_format(cc_display(v_elem), ""))
-                            cc_error(cv_join(cv_text(""), pieces_46), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_it, "line"))
+                            ccs_error(cv_join(cv_text(""), pieces_46), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_it)
                             return 0
                     if cv_truth(cc_is_struct(v_elem)):
                         let seq_48: i64 = v_items
@@ -3697,20 +3702,20 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                         cv_push(pieces_52, cv_format(cc_display(v_init_t), ""))
                         cv_push(pieces_52, cv_text(" нельзя присвоить "))
                         cv_push(pieces_52, cv_format(cc_display(v_want_t), ""))
-                        cc_error(cv_join(cv_text(""), pieces_52), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_join(cv_text(""), pieces_52), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                         return 0
                     if cv_truth(cc_is_array(v_want_t)):
-                        cc_error(cv_cat(cv_format(cc_display(v_want_t), ""), cv_text(": инициализация списка")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_cat(cv_format(cc_display(v_want_t), ""), cv_text(": инициализация списка")), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                         return 0
                     v_init_t = v_want_t
                 v_typ = v_init_t
                 if cv_classes(v_typ, "TSlice"):
                     let v_init: i64 = cv_getkey(v_st, "init")
                     if cc_is_mut_slice(v_typ) and not cv_classes(v_init, "SliceExpr"):
-                        cc_error(cv_text("изменяемый slice нельзя копировать: нужен диапазон локального массива"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("изменяемый slice нельзя копировать: нужен диапазон локального массива"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                         return 0
                     if ccs_slice_origin(v_init) == 0:
-                        cc_error(cv_text("инициализатор slice: нужен диапазон локального массива или имя неизменяемого slice либо результат с известным источником"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("инициализатор slice: нужен диапазон локального массива или имя неизменяемого slice либо результат с известным источником"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                         return 0
         let choice_53: i64 = cv_bool((cv_getkey(v_st, "init") == 0))
         if not cv_truth(choice_53):
@@ -3738,11 +3743,11 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
         ccs_tf(v_self, target, 0)
         if cv_has(target, cv_text("const_binding")):
             let name: i64 = cv_get(target, cv_text("name"), cv_getkey(target, "field"))
-            cc_error(cv_mod(cv_text("const %s нельзя изменить"), name), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_mod(cv_text("const %s нельзя изменить"), name), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         v_expected = cv_getkey(cv_getkey(v_st, "target"), "type")
         if cv_classes(v_expected, "TSlice"):
-            cc_error(cv_text("присваивание slice запрещено; создайте новый срез через let"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("присваивание slice запрещено; создайте новый срез через let"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         let logic_59: bool = cv_classes(v_expected, "TWrapper") and cv_classes(cv_getkey(v_st, "value"), "Call")
         if logic_59:
@@ -3754,19 +3759,19 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
         v_tg = cv_getkey(cv_getkey(v_st, "target"), "type")
         v_rt = cv_getkey(cv_getkey(v_st, "value"), "type")
         if cv_classes(v_tg, "TTaggedEnum") and (not cv_name(cv_getkey(v_st, "op"), "=") or cv_getkey(cv_getkey(v_st, "target"), "slot") == 0):
-            cc_error(cv_text("enum с payload поддерживает только '=' для локальных переменных и параметров"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("enum с payload поддерживает только '=' для локальных переменных и параметров"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         if cv_classes(v_tg, "TWrapper"):
             v_slot = cv_get(cv_getkey(v_st, "target"), cv_text("slot"), 0)
             if (not (cv_equal(cv_getkey(v_st, "op"), cv_text("=")))):
-                cc_error(cv_text("Option/Result поддерживает только присваивание '='"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_text("Option/Result поддерживает только присваивание '='"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
             let logic_61: bool = (v_slot == 0)
             if not logic_61:
                 let subject_60: i64 = cv_getkey(v_slot, "kind")
                 logic_61 = (not ((cv_equal(subject_60, cv_text("local")) or cv_equal(subject_60, cv_text("param")))))
             if (logic_61):
-                cc_error(cv_text("Option/Result присваивание поддерживается только для локальных переменных и параметров"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_text("Option/Result присваивание поддерживается только для локальных переменных и параметров"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
             if (not (cv_equal(v_rt, v_tg))):
                 let pieces_62: i64 = cv_list()
@@ -3775,7 +3780,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                 cv_push(pieces_62, cv_text(" <- "))
                 cv_push(pieces_62, cv_format(cc_display(v_rt), ""))
                 cv_push(pieces_62, cv_text(" недопустимо"))
-                cc_error(cv_join(cv_text(""), pieces_62), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_62), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
         if (cv_classes(cv_getkey(v_st, "op"), "str") and (not (cv_equal(cv_getkey(v_st, "op"), cv_text("="))))):
             if (cv_classes(v_tg, "TEnum") or cv_classes(v_rt, "TEnum")):
@@ -3783,28 +3788,28 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                 cv_push(pieces_63, cv_text("'"))
                 cv_push(pieces_63, cv_format(cv_getkey(v_st, "op"), ""))
                 cv_push(pieces_63, cv_text("' не поддерживается для enum"))
-                cc_error(cv_join(cv_text(""), pieces_63), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_63), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
             if not (cv_truth(cc_is_num(v_tg))):
                 let pieces_64: i64 = cv_list()
                 cv_push(pieces_64, cv_text("'"))
                 cv_push(pieces_64, cv_format(cv_getkey(v_st, "op"), ""))
                 cv_push(pieces_64, cv_text("' требует числовой тип"))
-                cc_error(cv_join(cv_text(""), pieces_64), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_64), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
             if not (cv_truth(cc_is_num(v_rt))):
                 let pieces_65: i64 = cv_list()
                 cv_push(pieces_65, cv_text("'"))
                 cv_push(pieces_65, cv_format(cv_getkey(v_st, "op"), ""))
                 cv_push(pieces_65, cv_text("' требует числовой тип"))
-                cc_error(cv_join(cv_text(""), pieces_65), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_65), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
             if (not (cv_equal(cv_bool(cv_classes(cv_getkey(cv_getkey(v_st, "value"), "type"), "TFloat")), cv_bool(cv_classes(cv_getkey(cv_getkey(v_st, "target"), "type"), "TFloat"))))):
                 let pieces_66: i64 = cv_list()
                 cv_push(pieces_66, cv_text("'"))
                 cv_push(pieces_66, cv_format(cv_getkey(v_st, "op"), ""))
                 cv_push(pieces_66, cv_text("': смешение int/float запрещено; приведите через as"))
-                cc_error(cv_join(cv_text(""), pieces_66), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_66), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
             let subject_67: i64 = cv_getkey(v_st, "op")
             if (((cv_equal(subject_67, cv_text("%")) or cv_equal(subject_67, cv_text("&")) or cv_equal(subject_67, cv_text("|")) or cv_equal(subject_67, cv_text("^")) or cv_equal(subject_67, cv_text("<<")) or cv_equal(subject_67, cv_text(">>")))) and (not (cv_truth(cc_is_int(v_tg))) or not (cv_truth(cc_is_int(v_rt))))):
@@ -3812,7 +3817,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                 cv_push(pieces_68, cv_text("'"))
                 cv_push(pieces_68, cv_format(cv_getkey(v_st, "op"), ""))
                 cv_push(pieces_68, cv_text("' требует целые числа"))
-                cc_error(cv_join(cv_text(""), pieces_68), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_68), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
             let choice_69: i64 = 0
             let subject_70: i64 = cv_getkey(v_st, "op")
@@ -3832,11 +3837,11 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                 cv_push(pieces_72, cv_text(" <- "))
                 cv_push(pieces_72, cv_format(cc_display(v_rt), ""))
                 cv_push(pieces_72, cv_text(" недопустимо"))
-                cc_error(cv_join(cv_text(""), pieces_72), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_join(cv_text(""), pieces_72), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
         else:
             if (not (cv_equal(cv_bool(cv_classes(cv_getkey(cv_getkey(v_st, "target"), "type"), "TFloat")), cv_bool(cv_classes(cv_getkey(cv_getkey(v_st, "value"), "type"), "TFloat"))))):
-                cc_error(cv_text("смешение int/float в составном присваивании"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_text("смешение int/float в составном присваивании"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
         ccs_check_lvalue(v_self, cv_getkey(v_st, "target"))
         if ((cv_equal(cv_getkey(v_st, "op"), cv_text("="))) and cv_classes(cv_getkey(v_st, "value"), "Call") and (cv_equal(cv_get(cv_getkey(v_st, "value"), cv_text("kindt"), 0), cv_text("ctor")))):
@@ -3877,7 +3882,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
         v_b = ccs_tf(v_self, cv_getkey(v_st, "stop"), 0)
         ccs_apply_temp_slice_releases(v_self)
         if (not (cv_truth(cc_is_int(v_a))) or not (cv_truth(cc_is_int(v_b))) or cv_classes(v_a, "TEnum") or cv_classes(v_b, "TEnum")):
-            cc_error(cv_text("границы for должны иметь целочисленный тип, кроме enum"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("границы for должны иметь целочисленный тип, кроме enum"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         cv_push(cv_getkey(v_self, "scope"), cv_dict())
         ccs_declare(v_self, cv_getkey(v_st, "var"), cc_int(CV_TRUE, 515), CV_FALSE, cv_getkey(v_st, "line"), cv_text("local"))
@@ -3892,13 +3897,13 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
         return 0
     if cv_classes(v_st, "BreakStmt"):
         if not (cv_truth(cv_getkey(cv_getkey(v_self, "fn"), "loop_stack"))):
-            cc_error(cv_text("break вне цикла"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("break вне цикла"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         cv_field(v_st, "cleanup_scopes", cv_sub(cv_length(cv_getkey(v_self, "defer_stack")), cv_subscript(cv_getkey(v_self, "loop_scope_depth"), cv_neg(11))))
         return 0
     if cv_classes(v_st, "ContinueStmt"):
         if not (cv_truth(cv_getkey(cv_getkey(v_self, "fn"), "loop_stack"))):
-            cc_error(cv_text("continue вне цикла"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("continue вне цикла"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         cv_field(v_st, "cleanup_scopes", cv_sub(cv_length(cv_getkey(v_self, "defer_stack")), cv_subscript(cv_getkey(v_self, "loop_scope_depth"), cv_neg(11))))
         return 0
@@ -3924,7 +3929,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                 # срез из сырого хранилища, лексического источника у него нет.
                 if not cc_is_owned_ptr(cv_getkey(v_source, "typ")) and ccs_slice_origin(cv_getkey(v_st, "value")) != v_source:
                     let v_msg: i64 = cv_cat(cv_text("return: срез должен происходить из параметра "), cv_getkey(v_fn, "ret_source"))
-                    cc_error(v_msg, cv_getkey(v_fn, "file"), cv_getkey(v_st, "line"))
+                    ccs_error(v_msg, cv_getkey(v_fn, "file"), v_st)
                     return 0
             if (cv_getkey(cv_getkey(v_self, "fn"), "sig_ret") == 0):
                 cv_field(v_self, "had_ret_values", CV_TRUE)
@@ -3936,20 +3941,20 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                         cv_push(pieces_80, cv_format(cc_display(v_vt), ""))
                         cv_push(pieces_80, cv_text(" вместо "))
                         cv_push(pieces_80, cv_format(cc_display(cv_getkey(cv_getkey(v_self, "fn"), "sig_ret")), ""))
-                        cc_error(cv_join(cv_text(""), pieces_80), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_join(cv_text(""), pieces_80), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                         return 0
                     let value: i64 = cv_getkey(v_st, "value")
                     if cv_name(cv_getkey(value, "kindt"), "wrapper_ctor") and cv_getkey(value, "temp_slot") == 0:
                         cv_field(value, "temp_slot", ccs_declare_temp(v_self, v_vt, cv_getkey(v_st, "line")))
                 else:
                     if cv_classes(v_vt, "TWrapper"):
-                        cc_error(cv_text("Option/Result return требует сигнатуру с тем же wrapper-типом"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                        ccs_error(cv_text("Option/Result return требует сигнатуру с тем же wrapper-типом"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                         return 0
                     ccs_check_buffer_cast(v_self, v_vt, cv_getkey(cv_getkey(v_self, "fn"), "sig_ret"), cv_getkey(v_st, "value"))
                     ccs_chk_cast(v_self, v_vt, cv_getkey(cv_getkey(v_self, "fn"), "sig_ret"), v_st, CV_FALSE)
         else:
             if (not (cv_getkey(cv_getkey(v_self, "fn"), "sig_ret") == 0)):
-                cc_error(cv_text("return без значения в функции с ->"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+                ccs_error(cv_text("return без значения в функции с ->"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
                 return 0
         cv_field(v_st, "cleanup_scopes", cv_length(cv_getkey(v_self, "defer_stack")))
         cv_field(v_self, "had_ret", CV_TRUE)
@@ -3958,10 +3963,10 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
         v_mt = ccs_tf(v_self, cv_getkey(v_st, "value"), 0)
         let enum_match: bool = cv_classes(v_mt, "TEnum") or cv_classes(v_mt, "TTaggedEnum")
         if not (enum_match or cv_classes(v_mt, "TWrapper")):
-            cc_error(cv_text("match поддерживает только enum, Option и Result"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("match поддерживает только enum, Option и Result"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         if (cv_classes(v_mt, "TWrapper") and cv_classes(cv_getkey(v_st, "value"), "Call") and (cv_equal(cv_get(cv_getkey(v_st, "value"), cv_text("kindt"), 0), cv_text("wrapper_ctor")))):
-            cc_error(cv_text("match временного wrapper-конструктора пока не поддерживается; используйте локальную переменную"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_text("match временного wrapper-конструктора пока не поддерживается; используйте локальную переменную"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         v_covered = cv_vector(CV_SET)
         v_wildcard = CV_FALSE
@@ -3980,13 +3985,13 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                         choice_83 = 19
                     logic_84 = (cv_equal(cv_length(v_covered), choice_83))
                 if (logic_84):
-                    cc_error(cv_text("повторный или перекрывающийся pattern"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arm, "line"))
+                    ccs_error(cv_text("повторный или перекрывающийся pattern"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arm)
                     return 0
                 v_wildcard = CV_TRUE
                 cv_field(v_arm, "tag", 0)
             else:
                 if cv_truth(v_wildcard):
-                    cc_error(cv_text("pattern после _ перекрывает уже покрытые варианты"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arm, "line"))
+                    ccs_error(cv_text("pattern после _ перекрывает уже покрытые варианты"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arm)
                     return 0
                 if enum_match:
                     let parts: i64 = cv_split(v_p, cv_text("."), 0)
@@ -4000,7 +4005,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                         cv_push(pieces_85, cv_format(v_p, "r"))
                         cv_push(pieces_85, cv_text(" для "))
                         cv_push(pieces_85, cv_format(cc_display(v_mt), ""))
-                        cc_error(cv_join(cv_text(""), pieces_85), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arm, "line"))
+                        ccs_error(cv_join(cv_text(""), pieces_85), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arm)
                         return 0
                     v_v = cv_at(parts, -1)
                     v_key = v_v
@@ -4021,7 +4026,7 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                         choice_86 = dict_88
                     v_variants = choice_86
                     if (not (cv_contains(v_variants, v_p))):
-                        cc_error(cv_cat(cv_text("неподходящий pattern "), cv_format(v_p, "r")), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arm, "line"))
+                        ccs_error(cv_cat(cv_text("неподходящий pattern "), cv_format(v_p, "r")), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arm)
                         return 0
                     cv_field(v_arm, "tag", cv_subscript(v_variants, v_p))
                     if cv_name(v_p, "Some") or cv_name(v_p, "Ok"):
@@ -4029,10 +4034,10 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
                     elif cv_name(v_p, "Err"):
                         v_payload = cv_at(cv_getkey(v_mt, "args"), 1)
                 if not cv_equal(cv_bool(v_payload != 0), cv_bool(cv_getkey(v_arm, "binding") != 0)):
-                    cc_error(cv_mod(cv_text("pattern %s: некорректная binding"), v_p), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arm, "line"))
+                    ccs_error(cv_mod(cv_text("pattern %s: некорректная binding"), v_p), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arm)
                     return 0
                 if (cv_contains(v_covered, v_key)):
-                    cc_error(cv_text("повторный pattern"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_arm, "line"))
+                    ccs_error(cv_text("повторный pattern"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_arm)
                     return 0
                 cv_add_set(v_covered, v_key)
             cv_push(cv_getkey(v_self, "scope"), cv_dict())
@@ -4058,13 +4063,13 @@ unsafe fn ccs_typecheck_st(v_self: i64, v_st: i64) -> i64:
             choice_91 = choice_92
         v_expected = choice_91
         if (not (cv_truth(v_wildcard)) and (not (cv_equal(v_covered, v_expected)))):
-            cc_error(cv_add(cv_text("match не исчерпывающий: "), cv_join(cv_text(", "), cv_sorted(cv_sub(v_expected, v_covered)))), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+            ccs_error(cv_add(cv_text("match не исчерпывающий: "), cv_join(cv_text(", "), cv_sorted(cv_sub(v_expected, v_covered)))), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
             return 0
         return 0
     if cv_classes(v_st, "ExprStmt"):
         ccs_tf(v_self, cv_getkey(v_st, "expr"), 0)
         return 0
-    cc_error(cv_add(cv_text("неизвестный stmt "), cv_typename(v_st)), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_st, "line"))
+    ccs_error(cv_add(cv_text("неизвестный stmt "), cv_typename(v_st)), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_st)
     return 0
 
 unsafe fn cc_precheck_expr(v_self: i64, v_expr: i64) -> i64:
@@ -4073,7 +4078,7 @@ unsafe fn cc_precheck_expr(v_self: i64, v_expr: i64) -> i64:
         return 0
     # A propagating defer would enter block cleanup again while it is being emitted.
     if cv_classes(v_expr, "Unary") and cv_name(cv_getkey(v_expr, "op"), "?"):
-        cc_error(cv_text("постфиксный ? нельзя использовать в defer"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_expr, "line"))
+        ccs_error(cv_text("постфиксный ? нельзя использовать в defer"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_expr)
         return 0
     if cv_classes(v_expr, "SliceExpr"):
         cc_precheck_expr(v_self, cv_getkey(v_expr, "base"))
@@ -4134,38 +4139,38 @@ unsafe fn ccs_check_lvalue(v_self: i64, v_e: i64) -> i64:
     let v_place: i64 = ccs_borrow_base(v_e)
     let v_typ: i64 = cv_getkey(v_place, "type")
     if cv_classes(v_typ, "TSlice") and not cc_is_mut_slice(v_typ):
-        cc_error(cv_text("неизменяемый slice нельзя изменять"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("неизменяемый slice нельзя изменять"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     ccs_check_exclusive_owner(v_self, v_place)
     if cv_classes(v_place, "VarRef") and cv_contains(cv_getkey(v_self, "frozen_mut_slots"), cv_getkey(v_place, "slot")):
-        cc_error(cv_text("нельзя писать через изменяемый slice, пока из него создан slice на чтение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("нельзя писать через изменяемый slice, пока из него создан slice на чтение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if cv_classes(v_place, "VarRef") and cv_contains(cv_getkey(v_self, "borrowed_slots"), cv_getkey(v_place, "slot")):
-        cc_error(cv_text("нельзя менять массив, пока slice ссылается на него"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("нельзя менять массив, пока slice ссылается на него"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     let v_bt: i64 = 0
     if cv_classes(v_e, "Member"):
         if cv_has(v_e, cv_text("enum_value")):
-            cc_error(cv_text("вариант enum нельзя изменить"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("вариант enum нельзя изменить"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         v_bt = cv_getkey(cv_getkey(v_e, "base"), "type")
         if (cv_truth(cc_is_struct(v_bt)) or (cv_truth(cc_is_ptr(v_bt)) and cv_classes(cv_getkey(v_bt, "elem"), "TStruct"))):
             return 0
-        cc_error(cv_text("нельзя присвоить это поле"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("нельзя присвоить это поле"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
         return 0
     if cv_classes(v_e, "Index"):
         if cv_truth(cc_is_string(cv_getkey(cv_getkey(v_e, "base"), "type"))):
-            cc_error(cv_text("string неизменяем; изменяйте копию в массиве байтов"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+            ccs_error(cv_text("string неизменяем; изменяйте копию в массиве байтов"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
             return 0
         return 0
     if cv_classes(v_e, "VarRef") or cv_classes(v_e, "Deref"):
         return 0
-    cc_error(cv_text("слева от '=' нельзя ставить это выражение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+    ccs_error(cv_text("слева от '=' нельзя ставить это выражение"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
     return 0
 
 unsafe fn ccs_check_exclusive_owner(v_self: i64, v_e: i64):
     if cv_classes(v_e, "VarRef") and cv_contains(cv_getkey(v_self, "exclusive_slots"), cv_getkey(v_e, "slot")):
-        cc_error(cv_text("нельзя обращаться к массиву, пока он заимствован изменяемым slice"), cv_getkey(cv_getkey(v_self, "fn"), "file"), cv_getkey(v_e, "line"))
+        ccs_error(cv_text("нельзя обращаться к массиву, пока он заимствован изменяемым slice"), cv_getkey(cv_getkey(v_self, "fn"), "file"), v_e)
 
 unsafe fn ccs_check_main(v_self: i64, v_entry_prog: i64) -> i64:
     let v_init_steps: i64 = 0
@@ -4187,7 +4192,7 @@ unsafe fn ccs_check_main(v_self: i64, v_entry_prog: i64) -> i64:
     v_entry_main = cv_get(cv_getkey(v_self, "fns"), main_name, 0)
     if ((not (v_entry_main == 0)) and (cv_equal(cv_getkey(v_entry_main, "file"), cv_getkey(v_entry_prog, "file")))):
         if cv_truth(cv_getkey(v_entry_main, "params")):
-            cc_error(cv_text("fn main не должен иметь параметров"), cv_getkey(v_entry_main, "file"), cv_getkey(v_entry_main, "line"))
+            ccs_error(cv_text("fn main не должен иметь параметров"), cv_getkey(v_entry_main, "file"), v_entry_main)
             return 0
         let items_5: i64 = cv_vector(CV_LIST)
         v_call = cc_Call(main_name, items_5, cv_getkey(v_entry_main, "line"))

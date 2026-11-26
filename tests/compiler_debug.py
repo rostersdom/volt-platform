@@ -77,7 +77,7 @@ class CompilerDebug(unittest.TestCase):
                 self.assertEqual(excerpt.index("abc") + 3, marker.index("^"))
                 self.assertTrue(marker.endswith("байтовая колонка 4"))
 
-    def test_parser_eof_and_imported_semantic_error_do_not_invent_columns(self):
+    def test_parser_eof_has_no_column_but_imported_name_error_does(self):
         source = self.source("fn main() -> i64")
         header, excerpt, marker = self.diagnostic(source, "--parse")
         self.assertTrue(header.startswith(f"{source}:1: ошибка:"))
@@ -87,7 +87,10 @@ class CompilerDebug(unittest.TestCase):
         dependency = self.source("fn bad() -> i64:\n    return missing_name\n", "debug_dependency.volt")
         header, excerpt, marker = self.diagnostic(source)
         self.assertTrue(header.startswith(f"{dependency}:2: ошибка:"))
-        self.assertEqual((excerpt, marker), ("  |     return missing_name", "  = колонка неизвестна"))
+        # Semantic errors show the recorded byte column of the offending name.
+        self.assertEqual(excerpt, "  |     return missing_name")
+        self.assertEqual(excerpt.index("missing_name"), marker.index("^"))
+        self.assertTrue(marker.endswith("байтовая колонка 12"))
 
     def test_encoder_has_function_location_but_no_source_column(self):
         source = self.source("# native code\nnative fn demo() -> i64:\n{\n    ud6\n}\n")

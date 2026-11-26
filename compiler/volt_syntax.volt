@@ -302,6 +302,19 @@ unsafe fn cc_StructLit(v_name: i64, v_items: i64, v_line: i64) -> i64:
     cv_field(v_self, "items", v_items)
     return v_self
 
+# Records the token's 1-based byte column on the node (the first token of the
+# construct, matching the token whose line the node already carries).
+unsafe fn ccp_place(v_node: i64, v_tok: i64) -> i64:
+    let v_ind: i64 = cv_subscript(v_tok, cv_text("ind"))
+    if not cv_less(v_ind, 3): cv_field(v_node, "col", cv_i(cv_index(v_ind) + 1))
+    return v_node
+
+# Copies the column from another node when a node inherits its position.
+unsafe fn ccp_place_like(v_node: i64, v_other: i64) -> i64:
+    let v_col: i64 = cv_get(v_other, cv_text("col"), 0)
+    if v_col != 0: cv_field(v_node, "col", v_col)
+    return v_node
+
 unsafe fn ccp_new(v_src: i64, v_file: i64) -> i64:
     let v_self: i64 = cv_node("Parser")
     cv_field(v_self, "file", v_file)
@@ -518,7 +531,7 @@ unsafe fn ccp_parse_struct(v_self: i64) -> i64:
         cv_push(pieces_3, cv_text(": нет полей"))
         ccp_error(v_self, cv_join(cv_text(""), pieces_3), v_kw)
         return 0
-    return cc_StructDef(cv_getkey(v_self, "file"), v_name, v_fields, cv_subscript(v_kw, cv_text("line")), v_type_params)
+    return ccp_place(cc_StructDef(cv_getkey(v_self, "file"), v_name, v_fields, cv_subscript(v_kw, cv_text("line")), v_type_params), v_kw)
 
 unsafe fn ccp_parse_type_params(v_self: i64, v_eq_params: i64) -> i64:
     let v_params: i64 = 0
@@ -659,7 +672,7 @@ unsafe fn ccp_parse_enum(v_self: i64, v_header: i64) -> i64:
         cv_push(pieces_7, cv_text(": нет вариантов"))
         ccp_error(v_self, cv_join(cv_text(""), pieces_7), v_kw)
         return 0
-    return cc_EnumDef(cv_getkey(v_self, "file"), v_name, v_variants, cv_subscript(v_kw, cv_text("line")))
+    return ccp_place(cc_EnumDef(cv_getkey(v_self, "file"), v_name, v_variants, cv_subscript(v_kw, cv_text("line"))), v_kw)
 
 unsafe fn ccp_parse_fn(v_self: i64, v_head_ind: i64) -> i64:
     let v_is_unsafe: i64 = 0
@@ -743,7 +756,7 @@ unsafe fn ccp_parse_fn(v_self: i64, v_head_ind: i64) -> i64:
         cv_push(extra_6, 0)
         let v_fn: i64 = cc_FnDef(cv_getkey(v_self, "file"), v_name, v_params, v_ret, v_body, extra_6)
         if v_source != 0: cv_field(v_fn, "ret_source", v_source)
-        return v_fn
+        return ccp_place(v_fn, v_kw)
     if cv_truth(v_is_extern):
         if cv_truth(v_type_params):
             ccp_error(v_self, cv_text("generic-функции пока не поддерживают native/extern ABI"), v_kw)
@@ -756,7 +769,7 @@ unsafe fn ccp_parse_fn(v_self: i64, v_head_ind: i64) -> i64:
         cv_push(extra_7, 0)
         let v_fn: i64 = cc_FnDef(cv_getkey(v_self, "file"), v_name, v_params, v_ret, 0, extra_7)
         if v_source != 0: cv_field(v_fn, "ret_source", v_source)
-        return v_fn
+        return ccp_place(v_fn, v_kw)
     ccp_expect(v_self, cv_text("punct"), cv_text(":"))
     ccp_line_end(v_self)
     v_body = ccp_parse_block(v_self, v_head_ind)
@@ -768,7 +781,7 @@ unsafe fn ccp_parse_fn(v_self: i64, v_head_ind: i64) -> i64:
     let v_fn: i64 = cc_FnDef(cv_getkey(v_self, "file"), v_name, v_params, v_ret, v_body, extra_9)
     if v_source != 0: cv_field(v_fn, "ret_source", v_source)
     if cv_truth(v_eq_params): cv_field(v_fn, "eq_params", v_eq_params)
-    return v_fn
+    return ccp_place(v_fn, v_kw)
 
 unsafe fn ccp_parse_native_body(v_self: i64) -> i64:
     let v_lines: i64 = 0
@@ -879,7 +892,7 @@ unsafe fn ccp_parse_stmt(v_self: i64) -> i64:
             if cv_classes(v_action, "DeferStmt") or cv_classes(v_action, "ReturnStmt") or cv_classes(v_action, "BreakStmt") or cv_classes(v_action, "ContinueStmt") or cv_classes(v_action, "IfStmt") or cv_classes(v_action, "WhileStmt") or cv_classes(v_action, "ForStmt") or cv_classes(v_action, "UnsafeStmt") or cv_classes(v_action, "LetStmt") or cv_classes(v_action, "ConstStmt"):
                 ccp_error(v_self, cv_text("defer допускает только простой оператор без flow-control или вложенного defer"), v_t)
                 return 0
-            return cc_DeferStmt(v_action, cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_DeferStmt(v_action, cv_subscript(v_t, cv_text("line"))), v_t)
         if (cv_equal(v_kw, cv_text("return"))):
             ccp_next(v_self)
             v_e = 0
@@ -887,15 +900,15 @@ unsafe fn ccp_parse_stmt(v_self: i64) -> i64:
             if (not ((cv_equal(subject_1, cv_text("nl")) or cv_equal(subject_1, cv_text("eof"))))):
                 v_e = ccp_parse_expr(v_self)
             ccp_line_end(v_self)
-            return cc_ReturnStmt(v_e, cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_ReturnStmt(v_e, cv_subscript(v_t, cv_text("line"))), v_t)
         if (cv_equal(v_kw, cv_text("break"))):
             ccp_next(v_self)
             ccp_line_end(v_self)
-            return cc_BreakStmt(cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_BreakStmt(cv_subscript(v_t, cv_text("line"))), v_t)
         if (cv_equal(v_kw, cv_text("continue"))):
             ccp_next(v_self)
             ccp_line_end(v_self)
-            return cc_ContinueStmt(cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_ContinueStmt(cv_subscript(v_t, cv_text("line"))), v_t)
         if (cv_equal(v_kw, cv_text("if"))):
             return ccp_parse_if(v_self)
         if (cv_equal(v_kw, cv_text("while"))):
@@ -909,7 +922,7 @@ unsafe fn ccp_parse_stmt(v_self: i64) -> i64:
             if not (cv_truth(v_body)):
                 ccp_error(v_self, cv_text("пустой unsafe-блок"), v_t)
                 return 0
-            return cc_UnsafeStmt(v_body, cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_UnsafeStmt(v_body, cv_subscript(v_t, cv_text("line"))), v_t)
     v_e = ccp_parse_expr(v_self)
     let items_4: i64 = cv_vector(CV_TUPLE)
     cv_push(items_4, cv_text("="))
@@ -936,9 +949,9 @@ unsafe fn ccp_parse_stmt(v_self: i64) -> i64:
             else:
                 choice_5 = cv_slice(v_op, 0, cv_neg(11))
             v_real = choice_5
-            return cc_AssignStmt(v_e, v_real, v_rhs, cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_AssignStmt(v_e, v_real, v_rhs, cv_subscript(v_t, cv_text("line"))), v_t)
     ccp_line_end(v_self)
-    return cc_ExprStmt(v_e, cv_subscript(v_t, cv_text("line")))
+    return ccp_place(cc_ExprStmt(v_e, cv_subscript(v_t, cv_text("line"))), v_t)
 
 unsafe fn ccp_parse_const(v_self: i64) -> i64:
     let v_t: i64 = 0
@@ -951,7 +964,7 @@ unsafe fn ccp_parse_const(v_self: i64) -> i64:
     ccp_expect(v_self, cv_text("punct"), cv_text("="))
     v_init = ccp_parse_expr(v_self)
     ccp_line_end(v_self)
-    return cc_ConstStmt(v_name, v_typ, v_init, cv_subscript(v_t, cv_text("line")))
+    return ccp_place(cc_ConstStmt(v_name, v_typ, v_init, cv_subscript(v_t, cv_text("line"))), v_t)
 
 unsafe fn ccp_parse_let(v_self: i64) -> i64:
     let v_t: i64 = 0
@@ -966,7 +979,7 @@ unsafe fn ccp_parse_let(v_self: i64) -> i64:
         ccp_next(v_self)
         v_init = ccp_parse_expr(v_self)
     ccp_line_end(v_self)
-    return cc_LetStmt(v_name, v_typ, v_init, cv_subscript(v_t, cv_text("line")))
+    return ccp_place(cc_LetStmt(v_name, v_typ, v_init, cv_subscript(v_t, cv_text("line"))), v_t)
 
 unsafe fn ccp_parse_match(v_self: i64) -> i64:
     let v_kw: i64 = 0
@@ -1006,12 +1019,12 @@ unsafe fn ccp_parse_match(v_self: i64) -> i64:
             ccp_expect(v_self, cv_text("punct"), cv_text(")"))
         ccp_expect(v_self, cv_text("punct"), cv_text(":"))
         v_body = ccp_block_or_inline(v_self, cv_subscript(v_p, cv_text("line")), cv_subscript(v_p, cv_text("ind")))
-        cv_push(v_arms, cc_MatchArm(v_pattern, v_binding, v_body, cv_subscript(v_p, cv_text("line"))))
+        cv_push(v_arms, ccp_place(cc_MatchArm(v_pattern, v_binding, v_body, cv_subscript(v_p, cv_text("line"))), v_p))
         ccp_skip_nl(v_self)
     if not (cv_truth(v_arms)):
         ccp_error(v_self, cv_text("match требует хотя бы один arm"), v_kw)
         return 0
-    return cc_MatchStmt(v_value, v_arms, cv_subscript(v_kw, cv_text("line")))
+    return ccp_place(cc_MatchStmt(v_value, v_arms, cv_subscript(v_kw, cv_text("line"))), v_kw)
 
 unsafe fn ccp_parse_if(v_self: i64) -> i64:
     let v_first: i64 = 0
@@ -1044,7 +1057,7 @@ unsafe fn ccp_parse_if(v_self: i64) -> i64:
         v_ekw = ccp_next(v_self)
         ccp_expect(v_self, cv_text("punct"), cv_text(":"))
         v_els = ccp_block_or_inline(v_self, cv_subscript(v_ekw, cv_text("line")), cv_subscript(v_ekw, cv_text("ind")))
-    return cc_IfStmt(v_conds, v_els, cv_subscript(v_first, cv_text("line")))
+    return ccp_place(cc_IfStmt(v_conds, v_els, cv_subscript(v_first, cv_text("line"))), v_first)
 
 unsafe fn ccp_parse_while(v_self: i64) -> i64:
     let v_kw: i64 = 0
@@ -1054,7 +1067,7 @@ unsafe fn ccp_parse_while(v_self: i64) -> i64:
     v_cond = ccp_parse_expr(v_self)
     ccp_expect(v_self, cv_text("punct"), cv_text(":"))
     v_body = ccp_block_or_inline(v_self, cv_subscript(v_kw, cv_text("line")), cv_subscript(v_kw, cv_text("ind")))
-    return cc_WhileStmt(v_cond, v_body, cv_subscript(v_kw, cv_text("line")))
+    return ccp_place(cc_WhileStmt(v_cond, v_body, cv_subscript(v_kw, cv_text("line"))), v_kw)
 
 unsafe fn ccp_parse_for(v_self: i64) -> i64:
     let v_kw: i64 = 0
@@ -1078,7 +1091,7 @@ unsafe fn ccp_parse_for(v_self: i64) -> i64:
     v_b = ccp_parse_expr(v_self)
     ccp_expect(v_self, cv_text("punct"), cv_text(":"))
     v_body = ccp_block_or_inline(v_self, cv_subscript(v_kw, cv_text("line")), cv_subscript(v_kw, cv_text("ind")))
-    v_st = cc_ForStmt(v_var, v_a, v_b, v_body, cv_subscript(v_kw, cv_text("line")))
+    v_st = ccp_place(cc_ForStmt(v_var, v_a, v_b, v_body, cv_subscript(v_kw, cv_text("line"))), v_kw)
     cv_field(v_st, "inclusive", v_inclusive)
     return v_st
 
@@ -1119,12 +1132,12 @@ unsafe fn ccp_parse_type(v_self: i64, v_in_cast: i64, v_nesting: i64) -> i64:
                 choice_2 = cv_text("slice_mut")
             else:
                 choice_2 = cv_text("slice")
-            return cc_TExpr(choice_2, items_1, cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file"))
+            return ccp_place(cc_TExpr(choice_2, items_1, cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file")), v_t)
         v_size = ccp_expect(v_self, cv_text("num"), 0)
         v_size_n = cv_int(cv_subscript(v_size, cv_text("t")), 83)
         ccp_expect(v_self, cv_text("punct"), cv_text("]"))
         v_elem = ccp_parse_type(v_self, v_in_cast, cv_add(v_nesting, 11))
-        return cc_TExpr(cv_text("array"), cv_pair(v_elem, v_size_n), cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file"))
+        return ccp_place(cc_TExpr(cv_text("array"), cv_pair(v_elem, v_size_n), cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file")), v_t)
     v_name = cv_subscript(ccp_expect(v_self, cv_text("id"), 0), cv_text("t"))
     if cv_truth(ccp_atp(v_self, cv_text("."))) and (not cv_truth(v_in_cast) or not cv_contains(cc_k_scalar_type_names, v_name)):
         ccp_next(v_self)
@@ -1135,7 +1148,7 @@ unsafe fn ccp_parse_type(v_self: i64, v_in_cast: i64, v_nesting: i64) -> i64:
         ccp_expect_gt(v_self)
         let items_3: i64 = cv_vector(CV_TUPLE)
         cv_push(items_3, v_e)
-        return cc_TExpr(cv_text("ptr"), items_3, cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file"))
+        return ccp_place(cc_TExpr(cv_text("ptr"), items_3, cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file")), v_t)
     if (cv_equal(v_name, cv_text("fnptr"))):
         ccp_expect(v_self, cv_text("punct"), cv_text("<"))
         ccp_expect(v_self, cv_text("punct"), cv_text("("))
@@ -1153,7 +1166,7 @@ unsafe fn ccp_parse_type(v_self: i64, v_in_cast: i64, v_nesting: i64) -> i64:
             ccp_next(v_self)
             v_result = ccp_parse_type(v_self, CV_FALSE, cv_add(v_nesting, 11))
         ccp_expect_gt(v_self)
-        return cc_TExpr(cv_text("fnptr"), cv_pair(cv_astuple(v_params), v_result), cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file"))
+        return ccp_place(cc_TExpr(cv_text("fnptr"), cv_pair(cv_astuple(v_params), v_result), cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file")), v_t)
     if ((cv_equal(v_name, cv_text("Option")) or cv_equal(v_name, cv_text("Result")))):
         ccp_expect(v_self, cv_text("punct"), cv_text("<"))
         let items_5: i64 = cv_vector(CV_LIST)
@@ -1165,7 +1178,7 @@ unsafe fn ccp_parse_type(v_self: i64, v_in_cast: i64, v_nesting: i64) -> i64:
         ccp_expect_gt(v_self)
         let items_6: i64 = cv_vector(CV_TUPLE)
         cv_extend(items_6, v_args)
-        return cc_TExpr(cv_lower(v_name), items_6, cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file"))
+        return ccp_place(cc_TExpr(cv_lower(v_name), items_6, cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file")), v_t)
     if (cv_truth(ccp_atp(v_self, cv_text("<"))) and not (cv_truth(v_in_cast))):
         ccp_next(v_self)
         let items_7: i64 = cv_vector(CV_LIST)
@@ -1178,10 +1191,10 @@ unsafe fn ccp_parse_type(v_self: i64, v_in_cast: i64, v_nesting: i64) -> i64:
         let items_8: i64 = cv_vector(CV_TUPLE)
         cv_push(items_8, v_name)
         cv_extend(items_8, v_args)
-        return cc_TExpr(cv_text("struct_type"), items_8, cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file"))
+        return ccp_place(cc_TExpr(cv_text("struct_type"), items_8, cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file")), v_t)
     let items_9: i64 = cv_vector(CV_TUPLE)
     cv_push(items_9, v_name)
-    return cc_TExpr(cv_text("name"), items_9, cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file"))
+    return ccp_place(cc_TExpr(cv_text("name"), items_9, cv_subscript(v_t, cv_text("line")), cv_getkey(v_self, "file")), v_t)
 
 unsafe fn ccp_expect_gt(v_self: i64) -> i64:
     let v_t: i64 = 0
@@ -1214,7 +1227,7 @@ unsafe fn ccp_parse_or(v_self: i64) -> i64:
     while cv_truth(ccp_at(v_self, cv_text("or"))):
         v_t = ccp_next(v_self)
         v_r = ccp_parse_and(v_self)
-        v_e = cc_Binary(cv_text("or"), v_e, v_r, cv_subscript(v_t, cv_text("line")))
+        v_e = ccp_place(cc_Binary(cv_text("or"), v_e, v_r, cv_subscript(v_t, cv_text("line"))), v_t)
     return v_e
 
 unsafe fn ccp_parse_and(v_self: i64) -> i64:
@@ -1225,7 +1238,7 @@ unsafe fn ccp_parse_and(v_self: i64) -> i64:
     while cv_truth(ccp_at(v_self, cv_text("and"))):
         v_t = ccp_next(v_self)
         v_r = ccp_parse_not(v_self)
-        v_e = cc_Binary(cv_text("and"), v_e, v_r, cv_subscript(v_t, cv_text("line")))
+        v_e = ccp_place(cc_Binary(cv_text("and"), v_e, v_r, cv_subscript(v_t, cv_text("line"))), v_t)
     return v_e
 
 unsafe fn ccp_parse_not(v_self: i64) -> i64:
@@ -1234,7 +1247,7 @@ unsafe fn ccp_parse_not(v_self: i64) -> i64:
     if cv_truth(ccp_at(v_self, cv_text("not"))):
         v_t = ccp_next(v_self)
         v_x = ccp_parse_not(v_self)
-        return cc_Unary(cv_text("not"), v_x, cv_subscript(v_t, cv_text("line")))
+        return ccp_place(cc_Unary(cv_text("not"), v_x, cv_subscript(v_t, cv_text("line"))), v_t)
     return ccp_parse_cmp(v_self)
 
 unsafe fn ccp_parse_cmp(v_self: i64) -> i64:
@@ -1245,7 +1258,7 @@ unsafe fn ccp_parse_cmp(v_self: i64) -> i64:
     if (cv_truth(ccp_atp(v_self, cv_text("=="))) or cv_truth(ccp_atp(v_self, cv_text("!="))) or cv_truth(ccp_atp(v_self, cv_text("<"))) or cv_truth(ccp_atp(v_self, cv_text("<="))) or cv_truth(ccp_atp(v_self, cv_text(">"))) or cv_truth(ccp_atp(v_self, cv_text(">=")))):
         v_op = cv_subscript(ccp_next(v_self), cv_text("t"))
         v_r = ccp_parse_bitor(v_self)
-        return cc_Binary(v_op, v_e, v_r, cv_getkey(v_e, "line"))
+        return ccp_place_like(cc_Binary(v_op, v_e, v_r, cv_getkey(v_e, "line")), v_e)
     return v_e
 
 unsafe fn ccp_parse_bitor(v_self: i64) -> i64:
@@ -1256,7 +1269,7 @@ unsafe fn ccp_parse_bitor(v_self: i64) -> i64:
     while cv_truth(ccp_atp(v_self, cv_text("|"))):
         v_t = ccp_next(v_self)
         v_r = ccp_parse_bitxor(v_self)
-        v_e = cc_Binary(cv_text("|"), v_e, v_r, cv_subscript(v_t, cv_text("line")))
+        v_e = ccp_place(cc_Binary(cv_text("|"), v_e, v_r, cv_subscript(v_t, cv_text("line"))), v_t)
     return v_e
 
 unsafe fn ccp_parse_bitxor(v_self: i64) -> i64:
@@ -1267,7 +1280,7 @@ unsafe fn ccp_parse_bitxor(v_self: i64) -> i64:
     while cv_truth(ccp_atp(v_self, cv_text("^"))):
         v_t = ccp_next(v_self)
         v_r = ccp_parse_bitand(v_self)
-        v_e = cc_Binary(cv_text("^"), v_e, v_r, cv_subscript(v_t, cv_text("line")))
+        v_e = ccp_place(cc_Binary(cv_text("^"), v_e, v_r, cv_subscript(v_t, cv_text("line"))), v_t)
     return v_e
 
 unsafe fn ccp_parse_bitand(v_self: i64) -> i64:
@@ -1278,7 +1291,7 @@ unsafe fn ccp_parse_bitand(v_self: i64) -> i64:
     while cv_truth(ccp_atp(v_self, cv_text("&"))):
         v_t = ccp_next(v_self)
         v_r = ccp_parse_shift(v_self)
-        v_e = cc_Binary(cv_text("&"), v_e, v_r, cv_subscript(v_t, cv_text("line")))
+        v_e = ccp_place(cc_Binary(cv_text("&"), v_e, v_r, cv_subscript(v_t, cv_text("line"))), v_t)
     return v_e
 
 unsafe fn ccp_parse_shift(v_self: i64) -> i64:
@@ -1289,7 +1302,7 @@ unsafe fn ccp_parse_shift(v_self: i64) -> i64:
     while (cv_truth(ccp_atp(v_self, cv_text("<<"))) or cv_truth(ccp_atp(v_self, cv_text(">>")))):
         v_t = ccp_next(v_self)
         v_r = ccp_parse_add(v_self)
-        v_e = cc_Binary(cv_subscript(v_t, cv_text("t")), v_e, v_r, cv_subscript(v_t, cv_text("line")))
+        v_e = ccp_place(cc_Binary(cv_subscript(v_t, cv_text("t")), v_e, v_r, cv_subscript(v_t, cv_text("line"))), v_t)
     return v_e
 
 unsafe fn ccp_parse_add(v_self: i64) -> i64:
@@ -1300,7 +1313,7 @@ unsafe fn ccp_parse_add(v_self: i64) -> i64:
     while (cv_truth(ccp_atp(v_self, cv_text("+"))) or cv_truth(ccp_atp(v_self, cv_text("-")))):
         v_t = ccp_next(v_self)
         v_r = ccp_parse_mul(v_self)
-        v_e = cc_Binary(cv_subscript(v_t, cv_text("t")), v_e, v_r, cv_subscript(v_t, cv_text("line")))
+        v_e = ccp_place(cc_Binary(cv_subscript(v_t, cv_text("t")), v_e, v_r, cv_subscript(v_t, cv_text("line"))), v_t)
     return v_e
 
 unsafe fn ccp_parse_mul(v_self: i64) -> i64:
@@ -1311,7 +1324,7 @@ unsafe fn ccp_parse_mul(v_self: i64) -> i64:
     while (cv_truth(ccp_atp(v_self, cv_text("*"))) or cv_truth(ccp_atp(v_self, cv_text("/"))) or cv_truth(ccp_atp(v_self, cv_text("%")))):
         v_t = ccp_next(v_self)
         v_r = ccp_parse_unary(v_self)
-        v_e = cc_Binary(cv_subscript(v_t, cv_text("t")), v_e, v_r, cv_subscript(v_t, cv_text("line")))
+        v_e = ccp_place(cc_Binary(cv_subscript(v_t, cv_text("t")), v_e, v_r, cv_subscript(v_t, cv_text("line"))), v_t)
     return v_e
 
 unsafe fn ccp_parse_unary(v_self: i64) -> i64:
@@ -1328,16 +1341,16 @@ unsafe fn ccp_parse_unary(v_self: i64) -> i64:
         v_t = ccp_next(v_self)
         v_x = ccp_parse_unary(v_self)
         if cv_classes(v_x, "IntLit"):
-            return cc_IntLit(cv_neg(cv_getkey(v_x, "val")), cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_IntLit(cv_neg(cv_getkey(v_x, "val")), cv_subscript(v_t, cv_text("line"))), v_t)
         if cv_classes(v_x, "FloatLit"):
-            return cc_FloatLit(cv_neg(cv_getkey(v_x, "val")), cv_subscript(v_t, cv_text("line")))
-        return cc_Unary(cv_text("-"), v_x, cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_FloatLit(cv_neg(cv_getkey(v_x, "val")), cv_subscript(v_t, cv_text("line"))), v_t)
+        return ccp_place(cc_Unary(cv_text("-"), v_x, cv_subscript(v_t, cv_text("line"))), v_t)
     if cv_truth(ccp_atp(v_self, cv_text("*"))):
         v_t = ccp_next(v_self)
-        return cc_Deref(ccp_parse_unary(v_self), cv_subscript(v_t, cv_text("line")))
+        return ccp_place(cc_Deref(ccp_parse_unary(v_self), cv_subscript(v_t, cv_text("line"))), v_t)
     if cv_truth(ccp_atp(v_self, cv_text("&"))):
         v_t = ccp_next(v_self)
-        return cc_AddrOf(ccp_parse_unary(v_self), cv_subscript(v_t, cv_text("line")))
+        return ccp_place(cc_AddrOf(ccp_parse_unary(v_self), cv_subscript(v_t, cv_text("line"))), v_t)
     return ccp_parse_postfix(v_self)
 
 unsafe fn cc_qualified_variant(name: i64, variant: i64) -> i64:
@@ -1377,7 +1390,7 @@ unsafe fn ccp_parse_postfix(v_self: i64) -> i64:
     while cv_truth(CV_TRUE):
         if cv_truth(ccp_atp(v_self, cv_text("?"))):
             v_t = ccp_next(v_self)
-            v_e = cc_Unary(cv_text("?"), v_e, cv_subscript(v_t, cv_text("line")))
+            v_e = ccp_place(cc_Unary(cv_text("?"), v_e, cv_subscript(v_t, cv_text("line"))), v_t)
             continue
         if cv_truth(ccp_atp(v_self, cv_text("."))):
             v_t = ccp_next(v_self)
@@ -1385,12 +1398,12 @@ unsafe fn ccp_parse_postfix(v_self: i64) -> i64:
             let name: i64 = 0
             if cv_truth(ccp_atp(v_self, cv_text("("))): name = cc_member_path(v_e)
             if name != 0:
-                v_e = cc_Call(cc_qualified_variant(name, v_f), ccp_parse_call_args(v_self), cv_getkey(v_t, "line"))
+                v_e = ccp_place(cc_Call(cc_qualified_variant(name, v_f), ccp_parse_call_args(v_self), cv_getkey(v_t, "line")), v_t)
                 cv_field(v_e, "call_qualifier", name)
                 cv_field(v_e, "call_member", v_f)
                 cv_field(v_e, "file", cv_getkey(v_self, "file"))
             else:
-                v_e = cc_Member(v_e, v_f, cv_subscript(v_t, cv_text("line")))
+                v_e = ccp_place(cc_Member(v_e, v_f, cv_subscript(v_t, cv_text("line"))), v_t)
             continue
         if cv_truth(ccp_atp(v_self, cv_text("["))):
             cv_field(v_self, "depth", cv_add(cv_getkey(v_self, "depth"), 11))
@@ -1401,17 +1414,17 @@ unsafe fn ccp_parse_postfix(v_self: i64) -> i64:
                 v_end = ccp_parse_expr(v_self)
                 ccp_expect(v_self, cv_text("punct"), cv_text("]"))
                 cv_field(v_self, "depth", cv_sub(cv_getkey(v_self, "depth"), 11))
-                v_e = cc_SliceExpr(v_e, v_idx, v_end, v_mutable, cv_subscript(v_t, cv_text("line")))
+                v_e = ccp_place(cc_SliceExpr(v_e, v_idx, v_end, v_mutable, cv_subscript(v_t, cv_text("line"))), v_t)
                 v_mutable = CV_FALSE
                 continue
             ccp_expect(v_self, cv_text("punct"), cv_text("]"))
             cv_field(v_self, "depth", cv_sub(cv_getkey(v_self, "depth"), 11))
-            v_e = cc_Index(v_e, v_idx, cv_subscript(v_t, cv_text("line")))
+            v_e = ccp_place(cc_Index(v_e, v_idx, cv_subscript(v_t, cv_text("line"))), v_t)
             continue
         if cv_truth(ccp_at(v_self, cv_text("as"))):
             v_t = ccp_next(v_self)
             v_ty = ccp_parse_type(v_self, CV_TRUE, 3)
-            v_e = cc_Cast(v_e, v_ty, cv_subscript(v_t, cv_text("line")))
+            v_e = ccp_place(cc_Cast(v_e, v_ty, cv_subscript(v_t, cv_text("line"))), v_t)
             continue
         break
     if cv_truth(v_mutable):
@@ -1427,22 +1440,22 @@ unsafe fn ccp_parse_primary(v_self: i64) -> i64:
     v_t = ccp_next(v_self)
     if (cv_equal(cv_subscript(v_t, cv_text("k")), cv_text("num"))):
         if cv_truth(cv_get(v_t, cv_text("f"), 0)):
-            return cc_FloatLit(cv_f(cv_subscript(v_t, cv_text("t"))), cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_FloatLit(cv_f(cv_subscript(v_t, cv_text("t"))), cv_subscript(v_t, cv_text("line"))), v_t)
         v_base = cv_subscript(v_t, cv_text("t"))
         if (cv_truth(cv_bool(cv_starts(v_base, cv_text("0x")))) or cv_truth(cv_bool(cv_starts(v_base, cv_text("0X"))))):
-            return cc_IntLit(cv_int(v_base, 131), cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_IntLit(cv_int(v_base, 131), cv_subscript(v_t, cv_text("line"))), v_t)
         if (cv_truth(cv_bool(cv_starts(v_base, cv_text("0b")))) or cv_truth(cv_bool(cv_starts(v_base, cv_text("0B"))))):
-            return cc_IntLit(cv_int(v_base, 19), cv_subscript(v_t, cv_text("line")))
-        return cc_IntLit(cv_int(v_base, 83), cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_IntLit(cv_int(v_base, 19), cv_subscript(v_t, cv_text("line"))), v_t)
+        return ccp_place(cc_IntLit(cv_int(v_base, 83), cv_subscript(v_t, cv_text("line"))), v_t)
     if (cv_equal(cv_subscript(v_t, cv_text("k")), cv_text("str"))):
-        return cc_StrLit(cv_subscript(v_t, cv_text("t")), cv_subscript(v_t, cv_text("line")))
+        return ccp_place(cc_StrLit(cv_subscript(v_t, cv_text("t")), cv_subscript(v_t, cv_text("line"))), v_t)
     if (cv_equal(cv_subscript(v_t, cv_text("k")), cv_text("char"))):
-        return cc_CharLit(cv_subscript(v_t, cv_text("t")), cv_subscript(v_t, cv_text("line")))
+        return ccp_place(cc_CharLit(cv_subscript(v_t, cv_text("t")), cv_subscript(v_t, cv_text("line"))), v_t)
     if (cv_equal(cv_subscript(v_t, cv_text("k")), cv_text("kw"))):
         if (cv_equal(cv_subscript(v_t, cv_text("t")), cv_text("true"))):
-            return cc_BoolLit(CV_TRUE, cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_BoolLit(CV_TRUE, cv_subscript(v_t, cv_text("line"))), v_t)
         if (cv_equal(cv_subscript(v_t, cv_text("t")), cv_text("false"))):
-            return cc_BoolLit(CV_FALSE, cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_BoolLit(CV_FALSE, cv_subscript(v_t, cv_text("line"))), v_t)
         let subject_1: i64 = cv_subscript(v_t, cv_text("t"))
         if ((cv_equal(subject_1, cv_text("sizeof")) or cv_equal(subject_1, cv_text("alignof")))):
             ccp_expect(v_self, cv_text("punct"), cv_text("("))
@@ -1450,18 +1463,18 @@ unsafe fn ccp_parse_primary(v_self: i64) -> i64:
             v_typ = ccp_parse_type(v_self, CV_FALSE, 3)
             ccp_expect(v_self, cv_text("punct"), cv_text(")"))
             cv_field(v_self, "depth", cv_sub(cv_getkey(v_self, "depth"), 11))
-            return cc_SizeAlignExpr(cv_subscript(v_t, cv_text("t")), v_typ, cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_SizeAlignExpr(cv_subscript(v_t, cv_text("t")), v_typ, cv_subscript(v_t, cv_text("line"))), v_t)
         ccp_error(v_self, cv_cat(cv_text("неожиданное ключевое слово "), cv_format(cv_subscript(v_t, cv_text("t")), "r")), v_t)
         return 0
     if (cv_equal(cv_subscript(v_t, cv_text("k")), cv_text("id"))):
         if (cv_equal(cv_subscript(v_t, cv_text("t")), cv_text("None"))):
             let items_2: i64 = cv_vector(CV_LIST)
-            return cc_Call(cv_text("None"), items_2, cv_subscript(v_t, cv_text("line")))
+            return ccp_place(cc_Call(cv_text("None"), items_2, cv_subscript(v_t, cv_text("line"))), v_t)
         if cv_truth(ccp_atp(v_self, cv_text("("))):
-            let v_call: i64 = cc_Call(cv_getkey(v_t, "t"), ccp_parse_call_args(v_self), cv_getkey(v_t, "line"))
+            let v_call: i64 = ccp_place(cc_Call(cv_getkey(v_t, "t"), ccp_parse_call_args(v_self), cv_getkey(v_t, "line")), v_t)
             cv_field(v_call, "file", cv_getkey(v_self, "file"))
             return v_call
-        return cc_VarRef(cv_subscript(v_t, cv_text("t")), cv_subscript(v_t, cv_text("line")))
+        return ccp_place(cc_VarRef(cv_subscript(v_t, cv_text("t")), cv_subscript(v_t, cv_text("line"))), v_t)
     if ((cv_equal(cv_subscript(v_t, cv_text("k")), cv_text("punct"))) and (cv_equal(cv_subscript(v_t, cv_text("t")), cv_text("(")))):
         cv_field(v_self, "depth", cv_add(cv_getkey(v_self, "depth"), 11))
         v_e = ccp_parse_expr(v_self)
@@ -1481,6 +1494,6 @@ unsafe fn ccp_parse_primary(v_self: i64) -> i64:
                 break
         ccp_expect(v_self, cv_text("punct"), cv_text("]"))
         cv_field(v_self, "depth", cv_sub(cv_getkey(v_self, "depth"), 11))
-        return cc_ArrayLit(v_items, cv_subscript(v_t, cv_text("line")))
+        return ccp_place(cc_ArrayLit(v_items, cv_subscript(v_t, cv_text("line"))), v_t)
     ccp_error(v_self, cv_cat(cv_text("неожиданный токен "), cv_format(cv_subscript(v_t, cv_text("t")), "r")), v_t)
     return 0

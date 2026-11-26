@@ -81,12 +81,14 @@ unsafe fn cc_diag_excerpt(p: ptr<char>, size: i64, line: i64, column: i64):
     put_err("байтовая колонка ")
     put_errnl(cv_cptr(cv_str(cv_i(column))) as string)
 
-unsafe fn cc_diagnostic(msg: i64, file: i64, line: i64, column: i64, source: ptr<char>, size: i64):
+unsafe fn cc_diag_message(msg: i64, file: i64, line: i64, label: string):
     if file != 0:
         cc_diag_text(cv_cptr(file), cv_len(file), -1, false)
         put_err(":")
         put_err(cv_cptr(cv_str(cv_i(max(1, line)))) as string)
-        put_err(": ошибка: ")
+        put_err(": ")
+        put_err(label)
+        put_err(": ")
     else:
         put_err("volt: ")
     let message: ptr<char> = cv_cptr(msg)
@@ -96,11 +98,14 @@ unsafe fn cc_diagnostic(msg: i64, file: i64, line: i64, column: i64, source: ptr
     cc_diag_text(message, shown, -1, false)
     if shown < length: put_err("...")
     put_err("\n")
+
+unsafe fn cc_diagnostic(msg: i64, file: i64, line: i64, column: i64, source: ptr<char>, size: i64):
+    cc_diag_message(msg, file, line, "ошибка")
     if source != (0 as ptr<char>) and line > 0: cc_diag_excerpt(source, size, line, column)
     exit(1)
 
-# line is the existing tagged CV value; column is a 1-based byte index, or 0 if unknown.
-unsafe fn cc_error_at(msg: i64, file: i64, line: i64, column: i64):
+# Shared resolution for errors and notes; prints without exiting.
+unsafe fn cc_diag_at(msg: i64, file: i64, line: i64, column: i64, label: string):
     let where: i64 = file
     let number: i64 = line
     if where == 0:
@@ -111,10 +116,23 @@ unsafe fn cc_error_at(msg: i64, file: i64, line: i64, column: i64):
     let source: i64 = 0
     # A diagnostic file can also be a library path; never reopen it as source.
     if where != 0: source = cv_get(cc_sources, where, 0)
-    if source != 0:
-        cc_diagnostic(msg, where, line_number, column, cv_cptr(source), cv_len(source))
-    else:
-        cc_diagnostic(msg, where, line_number, column, 0 as ptr<char>, 0)
+    cc_diag_message(msg, where, line_number, label)
+    if source != 0 and line_number > 0:
+        cc_diag_excerpt(cv_cptr(source), cv_len(source), line_number, column)
+
+# line is the existing tagged CV value; column is a 1-based byte index, or 0 if unknown.
+unsafe fn cc_error_at(msg: i64, file: i64, line: i64, column: i64):
+    cc_diag_at(msg, file, line, column, "ошибка")
+    exit(1)
+
+unsafe fn cc_node_column(node: i64) -> i64:
+    return cv_index(cv_get(node, cv_text("col"), cv_i(0)))
+
+unsafe fn cc_error_note(msg: i64, file: i64, node: i64, note_msg: i64, note: i64):
+    cc_diag_at(msg, file, cv_getkey(node, "line"), cc_node_column(node), "ошибка")
+    if note != 0:
+        cc_diag_at(note_msg, file, cv_getkey(note, "line"), cc_node_column(note), "примечание")
+    exit(1)
 
 unsafe fn cc_error(msg: i64, file: i64, line: i64):
     cc_error_at(msg, file, line, 0)

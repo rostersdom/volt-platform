@@ -27,10 +27,6 @@ fn owned_buffer_new(initial: string) -> OwnedBuffer:
     match owned_buffer_try_new(initial):
         Ok(buffer): return buffer
         Err(code): panic("OwnedBuffer allocation failed\n")
-    # Unreachable: the Err arm above panics. The compiler only accepts an
-    # explicit return as proof that a function exits, so close the match off.
-    while true:
-        return owned_buffer_new("")
 
 # Adopt the bytes of an already filled ByteBuffer without copying them. The
 # source is zeroed in place: a second call (or any later use of the source)

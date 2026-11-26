@@ -126,11 +126,15 @@ unsafe fn ccs_check_ownership(sem: i64, fn_def: i64):
     let scopes: i64 = cv_dict()
     cv_field(flow, "scopes", scopes)
     cv_field(fn_def, "owner_scopes", scopes)
-    cc_owned_block(flow, cv_getkey(fn_def, "body"), cv_vector(CV_SET), 0)
+    cc_owned_block(flow, cv_getkey(fn_def, "body"), cv_dict(), 0)
 
 # message — уже CV-текст (cv_text/cv_cat), чтобы подставлять имя типа.
 unsafe fn cc_owned_error(flow: i64, node: i64, message: i64):
-    cc_error(message, cv_getkey(flow, "file"), cv_getkey(node, "line"))
+    cc_error_at(message, cv_getkey(flow, "file"), cv_getkey(node, "line"), cc_node_column(node))
+
+unsafe fn cc_owned_after_move(flow: i64, node: i64, slot: i64, move: i64):
+    let title: i64 = cc_owner_title(cv_getkey(slot, "typ"))
+    cc_error_note(cv_cat(title, cv_text(" использован после переноса")), cv_getkey(flow, "file"), node, cv_text("перенесён здесь"), move)
 
 unsafe fn cc_owned_slot(flow: i64, slot: i64):
     let sem: i64 = cv_getkey(flow, "sem")
@@ -160,12 +164,14 @@ unsafe fn cc_owned_expr(flow: i64, moved: i64, expr: i64, use_kind: i64):
         if use_kind == CC_OWNER_VALUE: cc_owned_error(flow, expr, cv_cat(title, cv_text(" нельзя копировать или использовать здесь")))
         if deferred: cc_owned_error(flow, expr, cv_cat(cv_text("defer не может переносить или создавать "), title))
         if cv_classes(expr, "VarRef"):
-            if slot == 0 or cv_contains(moved, cv_i(slot)): cc_owned_error(flow, expr, cv_cat(title, cv_text(" использован после переноса")))
+            if slot == 0: cc_owned_error(flow, expr, cv_cat(title, cv_text(" использован после переноса")))
+            let move: i64 = cv_get(moved, cv_i(slot), 0)
+            if move != 0: cc_owned_after_move(flow, expr, slot, move)
             if cv_contains(cv_getkey(flow, "slice_borrows"), cv_i(slot)):
                 cc_owned_error(flow, expr, cv_cat(title, cv_text(" нельзя перенести, пока срез заимствует его байты")))
             if cv_contains(cv_getkey(flow, "pinned"), cv_i(slot)) or cv_contains(cv_getkey(flow, "call_reads"), cv_i(slot)):
                 cc_owned_error(flow, expr, cv_cat(title, cv_text(" нельзя перенести, пока он заимствован вызовом или defer")))
-            cv_add_set(moved, cv_i(slot))
+            cv_set(moved, cv_i(slot), expr)
             cv_field(expr, "owner_transfer", slot)
             return
         if cv_classes(expr, "Unary") and cv_name(cv_getkey(expr, "op"), "?"):
@@ -191,8 +197,8 @@ unsafe fn cc_owned_expr(flow: i64, moved: i64, expr: i64, use_kind: i64):
                 let owner_slot: i64 = cv_getkey(owner, "slot")
                 if owner_slot == 0 or cv_getkey(cv_getkey(owner_slot, "typ"), "owner_kind") != reader:
                     cc_owned_error(flow, arg, cv_cat(cv_text("требуется адрес локального "), cv_getkey(reader, "title")))
-                if cv_contains(moved, cv_i(owner_slot)):
-                    cc_owned_error(flow, arg, cv_cat(cc_owner_title(cv_getkey(owner_slot, "typ")), cv_text(" использован после переноса")))
+                let move: i64 = cv_get(moved, cv_i(owner_slot), 0)
+                if move != 0: cc_owned_after_move(flow, owner, owner_slot, move)
                 let reads: i64 = cv_vector(CV_SET)
                 cv_add_set(reads, cv_i(owner_slot))
                 if old_reads != 0: reads = cv_or(old_reads, reads)
@@ -214,9 +220,22 @@ unsafe fn cc_owned_expr(flow: i64, moved: i64, expr: i64, use_kind: i64):
     elif cv_classes(expr, "Unary") or cv_classes(expr, "Cast") or cv_classes(expr, "AddrOf") or cv_classes(expr, "Deref"):
         cc_owned_expr(flow, moved, cv_getkey(expr, "x"), CC_OWNER_VALUE)
     elif cv_classes(expr, "Binary"):
-        # Even a conditional RHS move makes the owner unavailable after this expression.
-        cc_owned_expr(flow, moved, cv_getkey(expr, "l"), CC_OWNER_VALUE)
-        cc_owned_expr(flow, moved, cv_getkey(expr, "r"), CC_OWNER_VALUE)
+        let left: i64 = cv_getkey(expr, "l")
+        let right: i64 = cv_getkey(expr, "r")
+        cc_owned_expr(flow, moved, left, CC_OWNER_VALUE)
+        let known: i64 = cc_literal_condition(left)
+        let op: i64 = cv_getkey(expr, "op")
+        if (known == CV_FALSE and cv_name(op, "and")) or (known == CV_TRUE and cv_name(op, "or")):
+            # Set up the dead operand for lowering without committing its loans or moves.
+            let pinned: i64 = cv_getkey(flow, "pinned")
+            let borrows: i64 = cv_getkey(flow, "slice_borrows")
+            let pin_count: i64 = cv_len(pinned)
+            let borrow_count: i64 = cv_len(borrows)
+            cc_owned_expr(flow, cc_owned_snapshot(moved), right, CC_OWNER_VALUE)
+            while cv_len(pinned) > pin_count: cv_pop(pinned)
+            while cv_len(borrows) > borrow_count: cv_pop(borrows)
+        else:
+            cc_owned_expr(flow, moved, right, CC_OWNER_VALUE)
     elif cv_classes(expr, "Index") or cv_classes(expr, "SliceExpr"):
         cc_owned_expr(flow, moved, cv_getkey(expr, "base"), CC_OWNER_VALUE)
         cc_owned_expr(flow, moved, cv_getkey(expr, "idx"), CC_OWNER_VALUE)
@@ -252,15 +271,23 @@ unsafe fn cc_owned_block(flow: i64, body: i64, moved: i64, entry: i64) -> bool:
     if cv_len(frame) != 0: cv_set(cv_getkey(flow, "scopes"), cv_i(body), frame)
     return falls_through
 
+# Each moved slot carries one origin from a path that reaches this point.
+unsafe fn cc_owned_snapshot(moved: i64) -> i64:
+    let copy: i64 = cv_dict()
+    cv_update(copy, moved)
+    return copy
+
 unsafe fn cc_owned_join(dst: i64, source: i64):
-    for i in 0..cv_len(source): cv_add_set(dst, cv_at(source, i))
+    for i in 0..cv_len(source):
+        let id: i64 = cv_at(source, i)
+        if not cv_has(dst, id): cv_set(dst, id, cv_get(source, id, 0))
 
 unsafe fn cc_owned_backedge(flow: i64, node: i64, loop: i64, moved: i64):
     let before: i64 = cv_at(loop, 0)
     let depth: i64 = cv_at(loop, 2)
     for i in 0..cv_len(moved):
         let id: i64 = cv_at(moved, i)
-        if cv_le(cv_getkey(cv_index(id), "owner_depth"), depth) and not cv_contains(before, id):
+        if cv_le(cv_getkey(cv_index(id), "owner_depth"), depth) and not cv_has(before, id):
             cc_owned_error(flow, node, cv_cat(cc_owner_title(cv_getkey(cv_index(id), "typ")), cv_text(" из внешней области может быть повторно использован на следующей итерации")))
 
 unsafe fn cc_owned_stmt(flow: i64, stmt: i64, moved: i64) -> bool:
@@ -289,7 +316,9 @@ unsafe fn cc_owned_stmt(flow: i64, stmt: i64, moved: i64) -> bool:
         cc_owned_stmt(flow, cv_getkey(stmt, "action"), moved)
         cv_field(flow, "deferred", CV_FALSE)
     elif cv_classes(stmt, "ExprStmt"):
-        cc_owned_expr(flow, moved, cv_getkey(stmt, "expr"), CC_OWNER_MOVE)
+        let expr: i64 = cv_getkey(stmt, "expr")
+        cc_owned_expr(flow, moved, expr, CC_OWNER_MOVE)
+        if cv_truth(cv_getkey(expr, "no_return")): return false
     elif cv_classes(stmt, "ReturnStmt"):
         cc_owned_expr(flow, moved, cv_getkey(stmt, "value"), CC_OWNER_MOVE)
         return false
@@ -297,20 +326,34 @@ unsafe fn cc_owned_stmt(flow: i64, stmt: i64, moved: i64) -> bool:
         return cc_owned_block(flow, cv_getkey(stmt, "body"), moved, 0)
     elif cv_classes(stmt, "IfStmt"):
         let arms: i64 = cv_getkey(stmt, "conds")
-        let merged: i64 = cv_vector(CV_SET)
+        let merged: i64 = cv_dict()
         let flows: bool = false
+        let can_reach: bool = true
+        let dead: i64 = cv_getkey(flow, "dead_branch")
+        let borrows: i64 = cv_getkey(flow, "slice_borrows")
         for i in 0..cv_len(arms):
             let arm: i64 = cv_at(arms, i)
-            cc_owned_expr(flow, moved, cv_at(arm, 0), CC_OWNER_VALUE)
-            let branch: i64 = cv_asset(moved)
-            if cc_owned_block(flow, cv_at(arm, 1), branch, 0):
+            let cond: i64 = cv_at(arm, 0)
+            let known: i64 = cc_literal_condition(cond)
+            let borrow_count: i64 = cv_len(borrows)
+            cc_owned_expr(flow, moved, cond, CC_OWNER_VALUE)
+            let branch: i64 = cc_owned_snapshot(moved)
+            let reachable: bool = can_reach and known != CV_FALSE
+            # Still check and lower dead arms, but do not let their exits affect live paths.
+            cv_field(flow, "dead_branch", cv_bool(cv_truth(dead) or not reachable))
+            if cc_owned_block(flow, cv_at(arm, 1), branch, 0) and reachable:
                 flows = true
                 cc_owned_join(merged, branch)
-        if cc_owned_block(flow, cv_getkey(stmt, "els"), moved, 0):
+            if not can_reach:
+                while cv_len(borrows) > borrow_count: cv_pop(borrows)
+            if known == CV_TRUE: can_reach = false
+        cv_field(flow, "dead_branch", cv_bool(cv_truth(dead) or not can_reach))
+        if cc_owned_block(flow, cv_getkey(stmt, "els"), moved, 0) and can_reach:
             flows = true
             cc_owned_join(merged, moved)
-        while cv_len(moved) > 0: cv_pop(moved)
-        cc_owned_join(moved, merged)
+        cv_field(flow, "dead_branch", dead)
+        while cv_len(moved) > 0: cv_remove(moved, cv_at(moved, -1))
+        cv_update(moved, merged)
         return flows
     elif cv_classes(stmt, "MatchStmt"):
         let value: i64 = cv_getkey(stmt, "value")
@@ -320,7 +363,7 @@ unsafe fn cc_owned_stmt(flow: i64, stmt: i64, moved: i64) -> bool:
         if owned: mode = CC_OWNER_MOVE
         cc_owned_expr(flow, moved, value, mode)
         let arms: i64 = cv_getkey(stmt, "arms")
-        let merged: i64 = cv_vector(CV_SET)
+        let merged: i64 = cv_dict()
         let flows: bool = false
         let sem: i64 = cv_getkey(flow, "sem")
         for i in 0..cv_len(arms):
@@ -335,7 +378,7 @@ unsafe fn cc_owned_stmt(flow: i64, stmt: i64, moved: i64) -> bool:
                     let id: i64 = ccs_declare_temp(sem, typ, cv_getkey(arm, "line"))
                     entry = cv_subscript(cv_getkey(sem, "slots"), id)
                     cv_field(arm, "owner_discard", entry)
-            let branch: i64 = cv_asset(moved)
+            let branch: i64 = cc_owned_snapshot(moved)
             if cc_owned_block(flow, cv_getkey(arm, "body"), branch, entry):
                 flows = true
                 cc_owned_join(merged, branch)
@@ -346,18 +389,29 @@ unsafe fn cc_owned_stmt(flow: i64, stmt: i64, moved: i64) -> bool:
         cc_owned_expr(flow, moved, cv_getkey(stmt, "start"), CC_OWNER_VALUE)
         cc_owned_expr(flow, moved, cv_getkey(stmt, "stop"), CC_OWNER_VALUE)
         let loop: i64 = cv_tuple()
-        cv_push(loop, cv_asset(moved))
-        cv_push(loop, cv_vector(CV_SET))
+        cv_push(loop, cc_owned_snapshot(moved))
+        cv_push(loop, cv_dict())
         cv_push(loop, cv_length(cv_getkey(flow, "frames")))
+        cv_push(loop, CV_FALSE)  # a reachable break, even if it moves nothing
         cv_push(loops, loop)
-        cc_owned_expr(flow, moved, cv_getkey(stmt, "cond"), CC_OWNER_VALUE)
-        let branch: i64 = cv_asset(moved)
-        if cc_owned_block(flow, cv_getkey(stmt, "body"), branch, 0): cc_owned_backedge(flow, stmt, loop, branch)
+        let cond: i64 = cv_getkey(stmt, "cond")
+        cc_owned_expr(flow, moved, cond, CC_OWNER_VALUE)
+        let branch: i64 = cc_owned_snapshot(moved)
+        let dead: i64 = cv_getkey(flow, "dead_branch")
+        let unreachable: bool = cv_truth(dead) or cc_literal_condition(cond) == CV_FALSE
+        cv_field(flow, "dead_branch", cv_bool(unreachable))
+        if cc_owned_block(flow, cv_getkey(stmt, "body"), branch, 0) and not unreachable:
+            cc_owned_backedge(flow, stmt, loop, branch)
+        cv_field(flow, "dead_branch", dead)
         cc_owned_join(moved, cv_at(loop, 1))
         cv_pop(loops)
+        if cc_literal_condition(cond) == CV_TRUE and not cv_truth(cv_at(loop, 3)): return false
     elif cv_classes(stmt, "BreakStmt") or cv_classes(stmt, "ContinueStmt"):
+        if cv_truth(cv_getkey(flow, "dead_branch")): return false
         let loop: i64 = cv_at(cv_getkey(flow, "loops"), -1)
         if cv_classes(stmt, "ContinueStmt"): cc_owned_backedge(flow, stmt, loop, moved)
-        else: cc_owned_join(cv_at(loop, 1), moved)
+        else:
+            cv_set(loop, cv_i(3), CV_TRUE)
+            cc_owned_join(cv_at(loop, 1), moved)
         return false
     return true
