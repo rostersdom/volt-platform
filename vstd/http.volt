@@ -247,11 +247,39 @@ unsafe fn http_get_address_bounded(host: string, port: i64, path: string, addres
     return http_get_transfer(host, port, path, address, response, &transfer)
 
 unsafe fn http_get_transfer(host: string, port: i64, path: string, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
+    return http_request_transfer(host, port, path, "GET", "", 0 as ptr<u8>, 0, address, response, transfer)
+
+unsafe fn http_append_number(request: ptr<ByteBuffer>, value: i64) -> i64:
+    if value < 0: return -22
+    let digits: [20]char
+    let count: i64 = 0
+    let v: i64 = value
+    if v == 0:
+        digits[0] = '0'
+        count = 1
+    else:
+        while v > 0:
+            digits[count] = '0' + (v % 10) as char
+            count += 1
+            v = v / 10
+    let status: i64 = 0
+    while count > 0 and status == 0:
+        count -= 1
+        status = bytes_push(request, digits[count] as u8)
+    return status
+
+# GET or POST with an optional request body. GET with a body is rejected.
+unsafe fn http_request_transfer(host: string, port: i64, path: string, method: string, content_type: string, body: ptr<u8>, body_len: i64, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
     response.len = 0
     transfer.clean_eof = false
     if transfer.response_bytes < 1 or transfer.response_bytes == 9223372036854775807 or transfer.body_bytes < 0: return -22
     if port < 1 or port > 65535:
         return -22
+    if body_len < 0 or (body_len > 0 and body == (0 as ptr<u8>)): return -22
+    let get: bool = method == "GET"
+    let post: bool = method == "POST"
+    if not get and not post: return -22
+    if get and body_len != 0: return -22
     let host_ptr: ptr<char> = host as ptr<char>
     let path_ptr: ptr<char> = path as ptr<char>
     let host_len: i64 = strlen(host_ptr)
@@ -276,45 +304,50 @@ unsafe fn http_get_transfer(host: string, port: i64, path: string, address: ptr<
                 return -22
             i += 2
         i += 1
-    let port_digits: [5]char
-    let port_value: i64 = port
-    let digit_count: i64 = 0
-    while port_value > 0:
-        port_digits[digit_count] = '0' + (port_value % 10) as char
-        digit_count += 1
-        port_value = port_value / 10
+    let ct_ptr: ptr<char> = content_type as ptr<char>
+    let ct_len: i64 = strlen(ct_ptr)
+    if ct_len > 128: return -22
+    i = 0
+    while i < ct_len:
+        let c: i64 = ct_ptr[i] as i64
+        if c < 32 or c == 127: return -22
+        i += 1
     if path_len > 8192:
         return -90
     let encoding_header: string = "Accept-Encoding: identity\r\n"
     if transfer.accept_gzip: encoding_header = "Accept-Encoding: gzip\r\n"
-    let request_len: i64 = path_len + host_len + digit_count + 45
-    if transfer.body_bytes > 0: request_len += __volt_strlen(encoding_header)
-    if request_len > 8192:
-        return -90
     let request: ByteBuffer
     bytes_init(&request)
     defer bytes_free(&request)
-    let status: i64 = bytes_reserve(&request, request_len)
-    if status < 0:
-        return status
-    status = http_append_text(&request, "GET ")
+    let status: i64 = bytes_reserve(&request, 8192)
+    if status < 0: return status
+    if status == 0: status = http_append_text(&request, method)
+    if status == 0: status = http_append_text(&request, " ")
     if status == 0: status = http_append_text(&request, path)
     if status == 0: status = http_append_text(&request, " HTTP/1.0\r\nHost: ")
     if status == 0: status = http_append_text(&request, host)
     if status == 0: status = bytes_push(&request, ':' as u8)
-    let d: i64 = digit_count
-    while status == 0 and d > 0:
-        d -= 1
-        status = bytes_push(&request, port_digits[d] as u8)
+    if status == 0: status = http_append_number(&request, port)
     if status == 0: status = http_append_text(&request, "\r\n")
+    if status == 0 and body_len > 0:
+        status = http_append_text(&request, "Content-Type: ")
+        if status == 0: status = http_append_text(&request, content_type)
+        if status == 0: status = http_append_text(&request, "\r\nContent-Length: ")
+        if status == 0: status = http_append_number(&request, body_len)
+        if status == 0: status = http_append_text(&request, "\r\n")
     if status == 0 and transfer.body_bytes > 0: status = http_append_text(&request, encoding_header)
     if status == 0: status = http_append_text(&request, "Connection: close\r\n\r\n")
     if status < 0: return status
+    if request.len > 8192:
+        return -90
     let fd: i64 = http_connect(port, address, transfer)
     if fd < 0: return fd
     defer close(fd)
     let result: i64 = http_write_all(fd, request.data, request.len, transfer)
     if result < 0: return result
+    if body_len > 0:
+        let sent: i64 = http_write_all(fd, body, body_len, transfer)
+        if sent < 0: return sent
     let frame: HttpFrame
     while true:
         result = http_transfer_remaining(transfer)

@@ -1346,7 +1346,7 @@ unsafe fn browser_js_prepare(page: ptr<BrowserPage>, doc: ptr<BrowserJsDocument>
         elif node.first_child >= 0:
             let child: ptr<HtmlNode> = &doc.nodes[node.first_child]
             if browser_js_add_script(&scripts, (doc.source as ptr<char>) + child.text_start, child.text_length) < 0: return 2
-    return browser_js_begin(&page.storage.js, doc, &time, &scripts)
+    return browser_js_begin(&page.storage.js, doc, page.url, &time, &scripts)
 
 unsafe fn browser_prepare_loaded_document(source_buffer: ptr<ByteBuffer>, url: string, page: ptr<BrowserPage>, view: BrowserViewport, transfer: ptr<HttpTransfer>, csp: ptr<BrowserPolicy>) -> i64:
     let policy: BrowserLoadPolicy = BrowserLoadPolicy(csp, 0 as ptr<BrowserScriptPeer>)

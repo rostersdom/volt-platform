@@ -140,3 +140,5 @@ jobs:
           python3 tests/run_all.py --group browser
           --require-test browser_navigation.BrowserLocalViewer.test_http_url_renders_fragmented_loopback_response
           --require-test browser_visual.BrowserVisual.test_linked_cascade_grid_media_and_png
+          --require-test browser_search_bar.BrowserSearchBar.test_explicit_search_flag_sends_the_encoded_query
+          --require-test browser_search_bar.BrowserSearchBar.test_typed_text_becomes_a_search_url

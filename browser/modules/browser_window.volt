@@ -1,5 +1,6 @@
 use browser_chrome
 use browser_document
+use browser_search_bar
 use utf8
 
 unsafe fn browser_focus_address(controls: ptr<BrowserControls>):
@@ -242,6 +243,11 @@ unsafe fn browser_queue_address(c: ptr<BrowserControls>, target: string, index: 
     let view: [26]char
     if browser_youtube_address(target, &view[0]):
         return browser_queue(c, (&view[0]) as string, index, -1, false)
+    let search: [8193]char
+    let converted: i64 = browser_search_address(target, &search[0], BROWSER_SEARCH_URL_BYTES + 1)
+    if converted > 0:
+        return browser_queue(c, (&search[0]) as string, index, -1, false)
+    if converted < 0: return false
     return browser_queue(c, target, index, resource_length, false)
 
 unsafe fn browser_finish_load(c: ptr<BrowserControls>, controller: ptr<BrowserNavigationController>, result: i64):
@@ -513,6 +519,9 @@ unsafe fn browser_script_click(c: ptr<BrowserControls>, controller: ptr<BrowserN
     click.sent = 0
     click.received = 0
     click.length = 0
+    click.phase = 0
+    click.fetch_deadline = 0
+    click.frame.len = 0
     c.script_owner = page.storage
     browser_copy_address(&c.script_href[0], href)
     return true
@@ -792,7 +801,9 @@ unsafe fn browser_run_window(controller: ptr<BrowserNavigationController>, initi
     defer browser_load_job_abandon(c.job)
     defer browser_video_close(&controller.active_page.storage.visual.video)
     if browser_resize(window, renderer, &canvas, &c, controller) < 0: return 1
-    if initial != "about:home": browser_queue_address(&c, initial, 0, -1)
+    # The command-line target is literal (YouTube links are converted by the app);
+    # only address-bar text may become a web search.
+    if initial != "about:home": browser_queue(&c, initial, 0, -1, false)
     if browser_draw_frame(renderer, &canvas, controller, &c) < 0: return 1
     while true:
         browser_js_reap()

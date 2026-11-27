@@ -1,2 +1,2 @@
-if (typeof fetch !== 'undefined' || typeof XMLHttpRequest !== 'undefined') throw new Error('network API');
+if (typeof fetch !== 'function' || typeof XMLHttpRequest !== 'function') throw new Error('network API');
 document.getElementById('out').textContent = 'Loopback works';

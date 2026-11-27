@@ -89,7 +89,9 @@ Python 3 нужен только для тестов и замеров. Необ
 
 ### Браузер VOLT
 
-Браузер открывает локальные HTML-файлы, HTTP и HTTPS. Для сборки нужны пакеты
+Браузер открывает локальные HTML-файлы, HTTP и HTTPS. Текст в адресной строке,
+который не является URL или локальным путём, уходит в веб-поиск; провайдер
+задаётся `VOLT_SEARCH_URL`. Для сборки нужны пакеты
 разработки SDL2, Cairo, PangoCairo, OpenSSL 3, zlib, libwebp и TurboJPEG 3.
 VOLT разбирает HTML и CSS и рассчитывает геометрию документа. Cairo и Pango
 рисуют интерфейс и пропорциональный текст, а SDL2 выводит кадр в окно.
@@ -201,7 +203,7 @@ xdg-mime default volt-launcher.desktop text/x-volt
 | Поиск | Индекс в памяти строится по переданным HTML/UTF-8 файлам: до 64 файлов по 256 КиБ. Поиск по русским и ASCII-словам не зависит от регистра, выдача — HTML со ссылками. Сетевых запросов нет. |
 | GPU | `use cuda` загружает NVIDIA Driver API при обращении, на Linux x86-64 и glibc 2.34+. Пример передаёт данные, запускает готовый PTX, синхронизируется и освобождает ресурсы. Генерации кода GPU из VOLT нет. |
 
-[Браузер и медиа](docs/html-engine.md) · [HTTP/TLS](docs/http.md) ·
+[Браузер и медиа](docs/html-engine.md) · [Онлайн-режим](docs/browser-online.md) · [HTTP/TLS](docs/http.md) ·
 [JSON](docs/json.md) · [Поиск](docs/search.md) · [CUDA](docs/cuda.md)
 
 ## Пример

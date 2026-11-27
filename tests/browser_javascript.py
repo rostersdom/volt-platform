@@ -122,7 +122,8 @@ class BrowserJavaScriptSuite:
 <script type="module">throw new Error('module')</script>
 <script>
 if (typeof require !== 'undefined' || typeof process !== 'undefined' ||
-    typeof fetch !== 'undefined' || typeof Duktape !== 'undefined') throw new Error('host API');
+    typeof Duktape !== 'undefined' || typeof fetch !== 'function' ||
+    typeof XMLHttpRequest !== 'function') throw new Error('host API');
 if (new Date(0).getTimezoneOffset() !== 0 || !String(new Date(0))) throw new Error('clock');
 document.addEventListener('DOMContentLoaded', function () {
     document.querySelector('#out').textContent = '<b>Я🙂 & ' + answer + '</b>';
@@ -356,7 +357,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 script = b"6 * 7;"
                 browser.sendall(struct.pack("<4q", 1, 0, 1, len(script)) + script)
                 with browser.makefile("rb") as response:
-                    self.assertEqual(response.read(24), struct.pack("<3q", 16, 0, 0))
+                    self.assertEqual(response.read(32), struct.pack("<4q", 24, 0, 0, 0))
                 secured, parent = status(child.pid), status("self")
                 self.assertEqual(secured["NoNewPrivs"].strip(), "1")
                 self.assertEqual(secured["Seccomp"].strip(), "2")
@@ -392,6 +393,156 @@ document.addEventListener('DOMContentLoaded', function () {
                                                 text=True, capture_output=True, timeout=6)
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(requests.count("/click.js"), 6)
+
+
+    def test_click_handler_fetches_through_the_browser_transport(self):
+        fixture = self.dir / "fetch-click"
+        if not fixture.exists():
+            subprocess.run([str(self.compiler), str(FIXTURES / "browser_fetch_click.volt"),
+                            "-o", str(fixture)], cwd=ROOT, check=True, timeout=30)
+        markup = '''<button id="load">Load</button>
+<p id="out">Fallback</p>
+<script>
+document.getElementById('load').addEventListener('click', function () {
+  fetch('/api').then(function (r) { return r.text(); }).then(function (t) {
+    document.getElementById('out').textContent = 'F:' + t;
+  });
+});
+</script>'''
+        with loopback({"/page": html_response(markup),
+                       "/api": (b"hello-click", {"Content-Type": "text/plain"}, 200)}) as (base, requests):
+            result = subprocess.run([str(fixture), base + "/page"],
+                                    env={"SDL_VIDEODRIVER": "dummy"},
+                                    capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "LoadF:hello-click\n")
+        self.assertEqual(requests, ["/page", "/api"])
+
+    def test_fetch_and_xhr_use_bounded_same_origin_transport(self):
+        def serve(routes, seen):
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def reply(self):
+                    if self.path == "/chunked":
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/plain")
+                        self.send_header("Transfer-Encoding", "chunked")
+                        self.end_headers()
+                        for part in (b"chunk-", b"ok"):
+                            self.wfile.write(b"%x\r\n" % len(part) + part + b"\r\n")
+                        self.wfile.write(b"0\r\n\r\n")
+                        return
+                    body, headers, status = routes.get(self.path, (b"", {}, 404))
+                    self.send_response(status)
+                    self.send_header("Content-Length", str(len(body)))
+                    for name, value in headers.items():
+                        self.send_header(name, value)
+                    try:
+                        self.end_headers()
+                        self.wfile.write(body)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+
+                def do_GET(self):
+                    seen.append(("GET", self.path))
+                    self.reply()
+
+                def do_POST(self):
+                    length = int(self.headers.get("Content-Length", "0"))
+                    seen.append(("POST", self.path, self.rfile.read(length)))
+                    self.reply()
+
+                def log_message(self, *_):
+                    pass
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            return server, thread
+
+        main_seen, foreign_seen = [], []
+        foreign_server, foreign_thread = serve(
+            {"/secret": (b"leaked", {"Content-Type": "text/plain"}, 200)}, foreign_seen)
+        foreign_base = f"http://127.0.0.1:{foreign_server.server_port}"
+        routes = {
+            "/page": (b"""<p id="out">Fallback</p><script>
+fetch('/text').then(function (r) { return r.text(); }).then(function (t) {
+  return fetch('/json').then(function (r) { return r.json(); }).then(function (v) {
+    var x = new XMLHttpRequest();
+    x.open('POST', '/echo');
+    x.setRequestHeader('Content-Type', 'text/plain');
+    x.send('ping');
+    return fetch('/missing').then(function (m) {
+      document.getElementById('out').textContent = t + '|' + v.a + '|' + x.status + '|' +
+        x.responseText + '|' + m.status + ':' + m.ok;
+    });
+  });
+});
+</script>""", {"Content-Type": "text/html"}, 200),
+            "/text": (b"hello", {"Content-Type": "text/plain"}, 200),
+            "/json": (b'{"a":"ok"}', {"Content-Type": "application/json"}, 200),
+            "/echo": (b"posted:ping", {"Content-Type": "text/plain"}, 200),
+            "/move": (b"", {"Location": "/text"}, 302),
+            "/cross": (f"""<p id="out">Fallback</p><script>
+fetch('{foreign_base}/secret').then(function (r) {{ return r.text(); }}).then(function (t) {{
+  document.getElementById('out').textContent = 'LEAK:' + t;
+}}).catch(function (e) {{ document.getElementById('out').textContent = 'BLOCKED'; }});
+</script>""".encode("utf-8"), {"Content-Type": "text/html"}, 200),
+            "/redirect-out": (b"", {"Location": f"{foreign_base}/secret"}, 302),
+            "/redirect-page": (b"""<p id="out">Fallback</p><script>
+fetch('/redirect-out').then(function (r) { return r.text(); }).then(function (t) {
+  document.getElementById('out').textContent = 'LEAK:' + t;
+}).catch(function (e) { document.getElementById('out').textContent = 'BLOCKED'; });
+</script>""", {"Content-Type": "text/html"}, 200),
+            "/move-page": (b"""<p id="out">Fallback</p><script>
+fetch('/move').then(function (r) { return r.text(); }).then(function (t) {
+  document.getElementById('out').textContent = 'M:' + t;
+});
+</script>""", {"Content-Type": "text/html"}, 200),
+            "/large": (b"x" * 100000, {"Content-Type": "text/plain"}, 200),
+            "/large-page": (b"""<p id="out">Fallback</p><script>
+fetch('/large').then(function (r) { return r.text(); }).then(function (t) {
+  document.getElementById('out').textContent = 'L:' + t.length;
+});
+</script>""", {"Content-Type": "text/html"}, 200),
+            "/chunked-page": (b"""<p id="out">Fallback</p><script>
+fetch('/chunked').then(function (r) { return r.text(); }).then(function (t) {
+  document.getElementById('out').textContent = 'C:' + t;
+});
+</script>""", {"Content-Type": "text/html"}, 200),
+        }
+        server, thread = serve(routes, main_seen)
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            rendered = self.render(f"{base}/page", scripts=True)
+            blocked = self.render(f"{base}/cross", scripts=True)
+            redirected = self.render(f"{base}/redirect-page", scripts=True)
+            moved = self.render(f"{base}/move-page", scripts=True)
+            large = self.render(f"{base}/large-page", scripts=True)
+            chunked = self.render(f"{base}/chunked-page", scripts=True)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            foreign_server.shutdown()
+            foreign_server.server_close()
+            foreign_thread.join(timeout=2)
+        self.assertEqual(rendered.stderr, "")
+        self.assertEqual(rendered.stdout, self.render(self.html(
+            "fetch-reference", "<p>hello|ok|200|posted:ping|404:false</p>")).stdout)
+        self.assertEqual(blocked.stderr, "")
+        self.assertEqual(blocked.stdout, self.render(self.html("cross-reference", "<p>BLOCKED</p>")).stdout)
+        self.assertEqual(redirected.stderr, "")
+        self.assertEqual(redirected.stdout, self.render(self.html("redirect-reference", "<p>BLOCKED</p>")).stdout)
+        self.assertEqual(moved.stderr, "")
+        self.assertEqual(moved.stdout, self.render(self.html("move-reference", "<p>M:hello</p>")).stdout)
+        self.assertEqual(large.stderr, "")
+        self.assertEqual(large.stdout, self.render(self.html("large-reference", "<p>L:100000</p>")).stdout)
+        self.assertEqual(chunked.stderr, "")
+        self.assertEqual(chunked.stdout, self.render(self.html("chunked-reference", "<p>C:chunk-ok</p>")).stdout)
+        self.assertEqual(foreign_seen, [])
+        self.assertIn(("POST", "/echo", b"ping"), main_seen)
+        self.assertIn(("GET", "/move"), main_seen)
+        self.assertIn(("GET", "/redirect-out"), main_seen)
 
 
 @unittest.skipUnless(HAVE_JS_DEPS, "optional Duktape/libseccomp development dependencies not installed")

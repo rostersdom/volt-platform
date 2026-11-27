@@ -33,7 +33,19 @@ API:
 ```volt
 unsafe fn http_get_ipv4(host: string, port: i64, path: string,
                         response: ptr<ByteBuffer>) -> i64
+unsafe fn http_request_transfer(host: string, port: i64, path: string,
+                                method: string, content_type: string,
+                                body: ptr<u8>, body_len: i64, address: ptr<u8>,
+                                response: ptr<ByteBuffer>,
+                                transfer: ptr<HttpTransfer>) -> i64
 ```
+
+`http_request_transfer` is the general form: `method` is `GET` or `POST`,
+`body`/`body_len` carry an optional request body for `POST`, and
+`content_type` becomes the `Content-Type` header. `http_get_transfer` is a thin
+wrapper that passes `GET` with an empty body. The same request builder backs the
+browser's page loads and the JavaScript `fetch`/`XMLHttpRequest` bridge, so GET
+request bytes are unchanged.
 
 The caller must initialize `response` with `bytes_init` before calling and own
 it for the duration of the call; after use call `bytes_free`. On success the

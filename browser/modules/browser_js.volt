@@ -3,14 +3,20 @@ use css
 use process
 use http
 use fs
+use browser_fetch
 
 const BROWSER_JS_INIT_MS: i64 = 750
 const BROWSER_JS_CLICK_MS: i64 = 100
+const BROWSER_JS_FETCH_MS: i64 = 3000
 const BROWSER_JS_SCRIPT_LIMIT: i64 = 16
 const BROWSER_JS_CODE_BYTES: i64 = 65536
-const BROWSER_JS_REPLY_LIMIT: i64 = 16 + CSS_TEXT_OVERRIDE_LIMIT * (16 + CSS_OVERRIDE_BYTES)
+const BROWSER_JS_REPLY_LIMIT: i64 = 24 + CSS_TEXT_OVERRIDE_LIMIT * (16 + CSS_OVERRIDE_BYTES)
 const BROWSER_JS_POLICY: i64 = 3
 const BROWSER_JS_WORKERS: i64 = 8
+const BROWSER_JS_MSG_REPLY: i64 = 0
+const BROWSER_JS_MSG_FETCH: i64 = 1
+const BROWSER_JS_FETCH_BYTES: i64 = 262144
+const BROWSER_JS_FRAME_LIMIT: i64 = 40 + 8192 + 128 + BROWSER_JS_FETCH_BYTES
 const JS_SLOT_FREE: i32 = 0
 const JS_SLOT_LIVE: i32 = 1
 const JS_SLOT_RETIRED: i32 = 2
@@ -35,6 +41,7 @@ struct BrowserJs:
     targets: [64]i64
     text: ptr<CssTextOverrides>
     notice: i64
+    origin: [8193]char
 
 struct BrowserJsDocument:
     source: string
@@ -54,6 +61,8 @@ struct BrowserJsClick:
     sent: i64
     received: i64
     length: i64
+    phase: i64
+    fetch_deadline: i64
     frame: ByteBuffer
 
 struct BrowserJsScripts:
@@ -259,6 +268,7 @@ unsafe fn browser_js_close(js: ptr<BrowserJs>):
     browser_js_text_free(js.text)
     js.text = 0 as ptr<CssTextOverrides>
     js.notice = 0
+    js.origin[0] = 0 as char
 
 unsafe fn browser_js_trusted(fd: i64, kind: i64) -> bool:
     let metadata: [32]u64
@@ -355,24 +365,92 @@ unsafe fn browser_js_read(js: ptr<BrowserJs>, bytes: ptr<char>, length: i64, tim
     return true
 
 unsafe fn browser_js_read_reply(js: ptr<BrowserJs>, time: ptr<HttpTransfer>, reply: ptr<BrowserJsReply>) -> i64:
-    let length: i64 = 0
-    if not browser_js_read(js, (&length) as ptr<char>, 8, time): return -5
-    if length < 16 or length > BROWSER_JS_REPLY_LIMIT: return -22
-    let frame: ByteBuffer
-    defer bytes_free(&frame)
-    if bytes_reserve(&frame, length) < 0: return -12
-    let data: ptr<char> = frame.data as ptr<char>
-    if not browser_js_read(js, data, length, time): return -5
-    return browser_js_parse_reply(js, data, length, reply)
+    while true:
+        let length: i64 = 0
+        if not browser_js_read(js, (&length) as ptr<char>, 8, time): return -5
+        if length < 8 or length > BROWSER_JS_FRAME_LIMIT: return -22
+        let frame: ByteBuffer
+        bytes_init(&frame)
+        if bytes_reserve(&frame, length) < 0:
+            bytes_free(&frame)
+            return -12
+        if not browser_js_read(js, frame.data as ptr<char>, length, time):
+            bytes_free(&frame)
+            return -5
+        let kind: ptr<i64> = frame.data as ptr<i64>
+        if kind[0] == BROWSER_JS_MSG_FETCH:
+            let handled: i64 = browser_js_reply_fetch(js, frame.data as ptr<char>, length, time)
+            bytes_free(&frame)
+            if handled < 0: return handled
+            continue
+        if kind[0] != BROWSER_JS_MSG_REPLY:
+            bytes_free(&frame)
+            return -22
+        let status: i64 = browser_js_parse_reply(js, frame.data as ptr<char>, length, reply)
+        bytes_free(&frame)
+        return status
+    return -5
+
+# Perform one same-origin fetch requested by the worker and send the reply.
+unsafe fn browser_js_reply_fetch(js: ptr<BrowserJs>, data: ptr<char>, length: i64, time: ptr<HttpTransfer>) -> i64:
+    if length < 40: return -22
+    let header: ptr<i64> = data as ptr<i64>
+    if header[0] != BROWSER_JS_MSG_FETCH: return -22
+    let method: i64 = header[1]
+    let url_len: i64 = header[2]
+    let type_len: i64 = header[3]
+    let body_len: i64 = header[4]
+    if method < 0 or method > 1: return -22
+    if url_len < 1 or url_len > 8192: return -22
+    if type_len < 0 or type_len > 128: return -22
+    if body_len < 0 or body_len > BROWSER_JS_FETCH_BYTES: return -22
+    if length != 40 + url_len + type_len + body_len: return -22
+    let url: [8193]char
+    let i: i64 = 0
+    while i < url_len:
+        url[i] = data[40 + i]
+        i += 1
+    url[url_len] = 0 as char
+    let request_type: [129]char
+    i = 0
+    while i < type_len:
+        request_type[i] = data[40 + url_len + i]
+        i += 1
+    request_type[type_len] = 0 as char
+    let body: ptr<u8> = (data + 40 + url_len + type_len) as ptr<u8>
+    let verb: string = "GET"
+    if method == 1: verb = "POST"
+    let out: ByteBuffer
+    bytes_init(&out)
+    defer bytes_free(&out)
+    let content_type: [129]char
+    let final_url: [8193]char
+    content_type[0] = 0 as char
+    final_url[0] = 0 as char
+    let status: i64 = browser_fetch_perform((&js.origin[0]) as string, verb, (&url[0]) as string, body, body_len, (&request_type[0]) as string, &out, &content_type[0], &final_url[0], time)
+    let code: i64 = 0
+    if status > 0: code = status
+    let ct_len: i64 = __volt_strlen((&content_type[0]) as string)
+    let body_out: i64 = out.len
+    let url_out: i64 = __volt_strlen((&final_url[0]) as string)
+    let payload: i64 = 40 + ct_len + body_out + url_out
+    let frame_length: [1]i64 = [payload]
+    let head: [5]i64 = [BROWSER_JS_MSG_FETCH, code, ct_len, body_out, url_out]
+    if not browser_js_send(js, (&frame_length[0]) as ptr<char>, 8, time): return -5
+    if not browser_js_send(js, (&head[0]) as ptr<char>, 40, time): return -5
+    if ct_len > 0 and not browser_js_send(js, &content_type[0], ct_len, time): return -5
+    if body_out > 0 and not browser_js_send(js, out.data as ptr<char>, body_out, time): return -5
+    if url_out > 0 and not browser_js_send(js, &final_url[0], url_out, time): return -5
+    return 0
 
 unsafe fn browser_js_parse_reply(js: ptr<BrowserJs>, data: ptr<char>, length: i64, reply: ptr<BrowserJsReply>) -> i64:
-    if length < 16 or length > BROWSER_JS_REPLY_LIMIT: return -22
+    if length < 24 or length > BROWSER_JS_REPLY_LIMIT: return -22
     let header: ptr<i64> = data as ptr<i64>
-    if header[0] < 0 or header[0] > 1 or header[1] < 0 or header[1] > 1: return -22
-    reply.script_error = header[0] == 1
-    reply.prevent_default = header[1] == 1
+    if header[0] != BROWSER_JS_MSG_REPLY or header[1] < 0 or header[1] > 1 or header[2] < 0 or header[2] > 1: return -22
+    reply.script_error = header[1] == 1
+    reply.prevent_default = header[2] == 1
     reply.text = 0 as ptr<CssTextOverrides>
-    if length == 16: return 0
+    if length == 24: return 0
     let text: ptr<CssTextOverrides> = mmap(sizeof(CssTextOverrides)) as ptr<CssTextOverrides>
     if (text as i64) <= 0: return -12
     let status: i64 = browser_js_decode_edits(js, text, data, length)
@@ -391,7 +469,7 @@ unsafe fn browser_js_valid_text(data: ptr<char>, size: i64) -> bool:
     return true
 
 unsafe fn browser_js_decode_edits(js: ptr<BrowserJs>, text: ptr<CssTextOverrides>, data: ptr<char>, length: i64) -> i64:
-    let pos: i64 = 16
+    let pos: i64 = 24
     let slot: i64 = 0
     while pos < length:
         if length - pos < 16 or text.count >= CSS_TEXT_OVERRIDE_LIMIT: return -22
@@ -526,11 +604,19 @@ unsafe fn browser_js_add_script(scripts: ptr<BrowserJsScripts>, data: ptr<char>,
     return 0
 
 # Returns 0 on success or no script, 1 on JS exception, 2 if the sandbox/limits fail.
-unsafe fn browser_js_begin(js: ptr<BrowserJs>, doc: ptr<BrowserJsDocument>, time: ptr<HttpTransfer>, scripts: ptr<BrowserJsScripts>) -> i64:
+unsafe fn browser_js_begin(js: ptr<BrowserJs>, doc: ptr<BrowserJsDocument>, url: string, time: ptr<HttpTransfer>, scripts: ptr<BrowserJsScripts>) -> i64:
     if scripts.count == 0: return 0
     let snapshot: ByteBuffer
     defer bytes_free(&snapshot)
     js.target_count = 0
+    let origin_length: i64 = __volt_strlen(url)
+    if origin_length < 1 or origin_length > 8192: return 2
+    let origin: ptr<char> = url as ptr<char>
+    let oi: i64 = 0
+    while oi < origin_length:
+        js.origin[oi] = origin[oi]
+        oi += 1
+    js.origin[origin_length] = 0 as char
     if browser_js_targets(doc, js, &snapshot, time) < 0 or http_transfer_remaining(time) < 0: return 2
     if browser_js_spawn(js) < 0: return 2
     let header: [3]i64 = [1, js.target_count, scripts.count]
@@ -550,21 +636,38 @@ unsafe fn browser_js_begin(js: ptr<BrowserJs>, doc: ptr<BrowserJsDocument>, time
 unsafe fn browser_js_poll_click(js: ptr<BrowserJs>, click: ptr<BrowserJsClick>, reply: ptr<BrowserJsReply>) -> i64:
     let time: i64 = http_remaining_ms(click.deadline)
     if time < 0: return time
-    let size: i64 = 8 * (click.request[0] + 1)
-    if click.sent < size:
-        let request: ptr<u8> = (&click.request[0]) as ptr<u8>
-        let n: i64 = __volt_http_send(js.fd, request + click.sent, size - click.sent)
+    if click.phase == 0:
+        if click.frame.len == 0:
+            let count: i64 = click.request[0]
+            let words: i64 = count + 3
+            if bytes_reserve(&click.frame, words * 8) < 0: return -12
+            let out: ptr<i64> = click.frame.data as ptr<i64>
+            out[0] = 8 * (count + 2)
+            out[1] = 0
+            out[2] = count
+            let i: i64 = 0
+            while i < count:
+                out[3 + i] = click.request[1 + i]
+                i += 1
+            click.frame.len = words * 8
+            click.sent = 0
+        let size: i64 = click.frame.len
+        let n: i64 = __volt_http_send(js.fd, click.frame.data + click.sent, size - click.sent)
         if n == -4 or n == HTTP_EAGAIN: return 0
         if n <= 0: return -5
         click.sent += n
         if click.sent < size: return 0
+        click.phase = 1
+        click.received = 0
+        click.length = 0
+        click.frame.len = 0
     if click.received < 8:
         let n: i64 = read(js.fd, ((&click.length) as ptr<char>) + click.received, 8 - click.received)
         if n == -4 or n == HTTP_EAGAIN: return 0
         if n <= 0: return -5
         click.received += n
         if click.received < 8: return 0
-        if click.length < 16 or click.length > BROWSER_JS_REPLY_LIMIT: return -22
+        if click.length < 8 or click.length > BROWSER_JS_FRAME_LIMIT: return -22
         if bytes_reserve(&click.frame, click.length) < 0: return -12
     let used: i64 = click.received - 8
     let n: i64 = read(js.fd, click.frame.data + used, click.length - used)
@@ -572,6 +675,24 @@ unsafe fn browser_js_poll_click(js: ptr<BrowserJs>, click: ptr<BrowserJsClick>, 
     if n <= 0: return -5
     click.received += n
     if click.received - 8 < click.length: return 0
+    let kind: i64 = (click.frame.data as ptr<i64>)[0]
+    if kind == BROWSER_JS_MSG_FETCH:
+        # A synchronous fetch may outlast the 100 ms click budget. All fetches
+        # in one click share a single absolute deadline, so a handler cannot
+        # extend the blocked window indefinitely.
+        if click.fetch_deadline <= 0: click.fetch_deadline = http_deadline_after(BROWSER_JS_FETCH_MS)
+        let extended: i64 = click.fetch_deadline
+        if extended < click.deadline: extended = click.deadline
+        let transfer: HttpTransfer = HttpTransfer(extended, 0 as ptr<i32>, 1, 0, false, false)
+        let handled: i64 = browser_js_reply_fetch(js, click.frame.data as ptr<char>, click.length, &transfer)
+        click.received = 0
+        click.length = 0
+        click.frame.len = 0
+        if handled < 0: return handled
+        click.deadline = extended
+        return 0
+    if kind != BROWSER_JS_MSG_REPLY: return -22
     let status: i64 = browser_js_parse_reply(js, click.frame.data as ptr<char>, click.length, reply)
     if status < 0: return status
+    click.phase = 0
     return 1

@@ -94,7 +94,11 @@ unsafe fn tls_http_get_bounded(host: string, port: i64, path: string, address: p
     return status
 
 unsafe fn tls_http_get_transfer(host: string, port: i64, path: string, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
-    let request: TlsHttpRequest = TlsHttpRequest(host, port, path, address, false)
+    let request: TlsHttpRequest = TlsHttpRequest(host, port, path, address, false, "GET", "", 0 as ptr<u8>, 0)
+    return tls_http_request(&request, response, transfer)
+
+unsafe fn tls_http_request_general(host: string, port: i64, path: string, method: string, content_type: string, body: ptr<u8>, body_len: i64, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
+    let request: TlsHttpRequest = TlsHttpRequest(host, port, path, address, false, method, content_type, body, body_len)
     return tls_http_request(&request, response, transfer)
 
 struct TlsHttpRequest:
@@ -103,6 +107,10 @@ struct TlsHttpRequest:
     path: string
     address: ptr<u8>
     http11: bool
+    method: string
+    content_type: string
+    body: ptr<u8>
+    body_len: i64
 
 unsafe fn tls_http_request(target: ptr<TlsHttpRequest>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
     let host: string = target.host
@@ -113,20 +121,33 @@ unsafe fn tls_http_request(target: ptr<TlsHttpRequest>, response: ptr<ByteBuffer
     if response == (0 as ptr<ByteBuffer>): return -22
     response.len = 0
     if address == (0 as ptr<u8>) or port < 1 or port > 65535 or transfer.response_bytes < 1 or transfer.response_bytes == 9223372036854775807 or transfer.body_bytes < 0: return -22
+    if target.body_len < 0 or (target.body_len > 0 and target.body == (0 as ptr<u8>)): return -22
+    let get: bool = target.method == "GET"
+    let post: bool = target.method == "POST"
+    if not get and not post: return -22
+    if get and target.body_len != 0: return -22
     let host_len: i64 = __volt_strlen(host)
     let path_len: i64 = __volt_strlen(path)
     if not http_host_valid(host as ptr<char>, host_len) or path_len < 1 or path_len > 8192 or (path as ptr<char>)[0] != '/': return -22
+    let content_len: i64 = __volt_strlen(target.content_type)
+    if content_len > 128: return -22
+    let ci: i64 = 0
+    let ct: ptr<char> = target.content_type as ptr<char>
+    while ci < content_len:
+        let c: i64 = ct[ci] as i64
+        if c < 32 or c == 127: return -22
+        ci += 1
     let request: ByteBuffer
     bytes_init(&request)
     defer bytes_free(&request)
-    let status: i64 = bytes_reserve(&request, path_len + host_len + 96)
+    let status: i64 = bytes_reserve(&request, path_len + host_len + content_len + 160)
     if status < 0: return status
-    let prefix: string = "GET "
-    let p: ptr<char> = prefix as ptr<char>
+    let p: ptr<char> = target.method as ptr<char>
     let i: i64 = 0
     while p[i] != 0 as char:
         if bytes_push(&request, p[i] as u8) != 0: return -12
         i += 1
+    if bytes_push(&request, ' ' as u8) != 0: return -12
     p = path as ptr<char>
     i = 0
     while p[i] != 0 as char:
@@ -157,6 +178,12 @@ unsafe fn tls_http_request(target: ptr<TlsHttpRequest>, response: ptr<ByteBuffer
         digit_count -= 1
         if bytes_push(&request, digits[digit_count] as u8) != 0: return -12
     status = http_append_text(&request, "\r\n")
+    if status == 0 and target.body_len > 0:
+        status = http_append_text(&request, "Content-Type: ")
+        if status == 0: status = http_append_text(&request, target.content_type)
+        if status == 0: status = http_append_text(&request, "\r\nContent-Length: ")
+        if status == 0: status = http_append_number(&request, target.body_len)
+        if status == 0: status = http_append_text(&request, "\r\n")
     if status == 0 and transfer.body_bytes > 0:
         if transfer.accept_gzip: status = http_append_text(&request, "Accept-Encoding: gzip\r\n")
         else: status = http_append_text(&request, "Accept-Encoding: identity\r\n")
@@ -204,6 +231,17 @@ unsafe fn tls_http_request(target: ptr<TlsHttpRequest>, response: ptr<ByteBuffer
         let written: i32 = SSL_write(ssl, (request.data + sent) as ptr<char>, (request.len - sent) as i32)
         if written > 0:
             sent += written as i64
+        else:
+            let ready: i64 = tls_wait(fd, SSL_get_error(ssl, written), transfer, -5)
+            if ready < 0: return ready
+    let body_sent: i64 = 0
+    while body_sent < target.body_len:
+        let remaining: i64 = http_transfer_remaining(transfer)
+        if remaining < 0: return remaining
+        ERR_clear_error()
+        let written: i32 = SSL_write(ssl, (target.body + body_sent) as ptr<char>, (target.body_len - body_sent) as i32)
+        if written > 0:
+            body_sent += written as i64
         else:
             let ready: i64 = tls_wait(fd, SSL_get_error(ssl, written), transfer, -5)
             if ready < 0: return ready

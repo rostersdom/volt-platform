@@ -1,4 +1,5 @@
 use browser_window
+use browser_search_bar
 use process
 
 unsafe fn browser_open(path: string, check: bool, default_page: bool, scripts: bool, screenshot: string) -> i64:
@@ -79,7 +80,7 @@ unsafe fn browser_open(path: string, check: bool, default_page: bool, scripts: b
     return 0
 
 fn browser_usage() -> i64:
-    put_err("usage: browser [--js] [--check | --screenshot FILE.png] [local-file | HTTP(S)-URL]\n")
+    put_err("usage: browser [--js] [--check | --screenshot FILE.png] [--search QUERY | local-file | HTTP(S)-URL]\n")
     return 2
 
 fn main() -> i64:
@@ -87,30 +88,48 @@ fn main() -> i64:
     let check: bool = false
     let scripts: bool = false
     let path_given: bool = false
+    let search_given: bool = false
     let path: string = ""
+    let search: string = ""
     let screenshot: string = ""
     let i: i64 = 1
     while i < count:
         match arg_at(i):
             Ok(argument):
-                if argument == "--check" and not check and not path_given:
+                if argument == "--check" and not check and not path_given and not search_given:
                     check = true
-                elif argument == "--js" and not scripts and not path_given:
+                elif argument == "--js" and not scripts and not path_given and not search_given:
                     scripts = true
-                elif argument == "--screenshot" and not check and not path_given:
+                elif argument == "--search" and not search_given and not path_given:
+                    i += 1
+                    match arg_at(i):
+                        Ok(query): search = query
+                        Err(error): return browser_usage()
+                    if search == "": return browser_usage()
+                    search_given = true
+                elif argument == "--screenshot" and not check and not path_given and not search_given:
                     i += 1
                     match arg_at(i):
                         Ok(filename): screenshot = filename
                         Err(error): return browser_usage()
                     if screenshot == "" or screenshot[0] == '-': return browser_usage()
                     check = true
-                elif argument == "--js" or argument == "--check" or argument == "--screenshot" or path_given:
+                elif argument == "--js" or argument == "--check" or argument == "--screenshot" or argument == "--search" or path_given or search_given:
                     return browser_usage()
                 else:
                     path = argument
                     path_given = true
             Err(error): return 2
         i += 1
+    if search_given:
+        let url: [8193]char
+        let built: i64 = 0
+        unsafe: built = browser_search_build(search, &url[0], BROWSER_SEARCH_URL_BYTES + 1)
+        if built <= 0:
+            put_err("browser: cannot build the search URL\n")
+            return 2
+        unsafe: path = (&url[0]) as string
+        path_given = true
     if not path_given:
         path = "about:home"
         if check: path = "examples/page.html"

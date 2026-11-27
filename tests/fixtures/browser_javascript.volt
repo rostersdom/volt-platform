@@ -12,16 +12,16 @@ unsafe fn verify_click_wire():
     js.targets[0] = 5
     let click: BrowserJsClick
     defer bytes_free(&click.frame)
-    click.sent = 8
+    click.phase = 1
     click.deadline = http_deadline_after(3000)
-    let frame: [3]i64 = [16, 0, 1]
+    let frame: [4]i64 = [24, 0, 0, 1]
     let data: ptr<char> = (&frame[0]) as ptr<char>
     let reply: BrowserJsReply
     if write(pair[1] as i64, data, 1) != 1 or browser_js_poll_click(&js, &click, &reply) != 0:
         panic("JS split frame header was not retained")
-    if write(pair[1] as i64, data + 1, 23) != 23 or browser_js_poll_click(&js, &click, &reply) != 1 or not reply.prevent_default:
+    if write(pair[1] as i64, data + 1, 31) != 31 or browser_js_poll_click(&js, &click, &reply) != 1 or not reply.prevent_default:
         panic("JS split frame did not finish")
-    let malformed: [7]i64 = [0, 0, 5, 1, 65, 0, 0]
+    let malformed: [7]i64 = [0, 0, 0, 5, 1, 65, 0]
     # A legal first edit followed by a truncated record must not be applied.
     if browser_js_parse_reply(&js, (&malformed[0]) as ptr<char>, 34, &reply) >= 0 or reply.text != (0 as ptr<CssTextOverrides>):
         panic("JS accepted a malformed transaction")
