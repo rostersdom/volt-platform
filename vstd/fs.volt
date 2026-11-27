@@ -188,31 +188,30 @@ pub fn read_all(path: string, max_bytes: i64) -> Result<OwnedBuffer, IoError>:
         unsafe: close(fd)
         return Err(IoError(failed))
     let storage: ByteBuffer
-    let done: bool = false
+    let extra: u8
     unsafe:
-        # One byte of read room past the limit detects a file that grows
-        # past max_bytes while it is being read.
-        while not done:
+        while true:
             let remaining: i64 = max_bytes - storage.len
-            let room: i64 = 4096
-            if remaining < 4096: room = remaining + 1
-            let reserved: i64 = bytes_reserve(&storage, storage.len + room)
-            if reserved < 0:
-                failed = (0 - reserved) as i32
-                done = true
-            else:
-                let n: i64 = read(fd, storage.data + storage.len, room)
-                if n < 0:
-                    if n != -4:  # EINTR: retry
-                        failed = (0 - n) as i32
-                        done = true
-                elif n == 0:
-                    done = true
-                else:
-                    storage.len = storage.len + n
-                    if storage.len > max_bytes:
-                        failed = ERR_FILE_TOO_LARGE
-                        done = true
+            # At the limit, probe for EOF without growing the buffer.
+            let room: i64 = 1
+            let dst: ptr<u8> = &extra
+            if remaining > 0:
+                room = min(4096, remaining)
+                let reserved: i64 = bytes_reserve(&storage, storage.len + room)
+                if reserved < 0:
+                    failed = (0 - reserved) as i32
+                    break
+                dst = storage.data + storage.len
+            let n: i64 = read(fd, dst, room)
+            if n == -4: continue  # EINTR: retry
+            if n < 0:
+                failed = (0 - n) as i32
+                break
+            if n == 0: break
+            if remaining == 0:
+                failed = ERR_FILE_TOO_LARGE
+                break
+            storage.len = storage.len + n
         if failed != 0: bytes_free(&storage)
     if failed != 0:
         unsafe: close(fd)

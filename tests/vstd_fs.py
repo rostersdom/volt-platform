@@ -47,6 +47,21 @@ class VstdFs(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((result.stdout, result.stderr), (expected + "\n", ""))
 
+    def copy_compiler_with_vstd(self, cwd):
+        compiler = cwd / "volt"
+        shutil.copy2(VOLT, compiler)
+        shutil.copytree(ROOT / "vstd", cwd / "vstd")
+        return compiler
+
+    def run_read_all_at_capacity(self, cwd, compiler, expected):
+        buffers = cwd / "vstd/bytes.volt"
+        text = buffers.read_text(encoding="utf-8")
+        allocation = "    let mapped: ptr<char> = mmap(new_cap)\n"
+        self.assertEqual(text.count(allocation), 1)
+        buffers.write_text(text.replace(allocation, '    print("alloc", new_cap)\n' + allocation),
+                           encoding="utf-8")
+        self.run_fixture("vstd_fs_read_all_limit", cwd, f"alloc 4096\n{expected}", compiler=compiler)
+
     def test_read_all_through_question_mark_without_manual_release(self):
         with tempfile.TemporaryDirectory(dir=self.build, prefix="read-all-") as tmp:
             cwd = Path(tmp)
@@ -77,6 +92,29 @@ class VstdFs(unittest.TestCase):
             self.assertEqual({p.name for p in cwd.iterdir()},
                              {"payload.bin", "empty.bin", "exact.bin", "adir", "pipe"})
 
+    def test_read_all_at_capacity_probes_eof_without_growing_buffer(self):
+        with tempfile.TemporaryDirectory(dir=self.build, prefix="read-all-exact-") as tmp:
+            cwd = Path(tmp)
+            compiler = self.copy_compiler_with_vstd(cwd)
+            (cwd / "payload.bin").write_bytes(b"Q" * 4096)
+            self.run_read_all_at_capacity(cwd, compiler, "ok 4096 81")
+
+    def test_read_all_rejects_extra_byte_after_statx_reports_exact_limit(self):
+        with tempfile.TemporaryDirectory(dir=self.build, prefix="read-all-growth-") as tmp:
+            cwd = Path(tmp)
+            compiler = self.copy_compiler_with_vstd(cwd)
+            (cwd / "payload.bin").write_bytes(b"Q" * 4096 + b"!")
+
+            # Leave the real type and mask intact, but report a stale stx_size
+            # (offset 40). The extra byte is only discovered by read(2).
+            legacy = cwd / "vstd/fs_legacy.volt"
+            text = legacy.read_text(encoding="utf-8")
+            statx = "    mov rax, 332\n    syscall\n"
+            self.assertEqual(text.count(statx), 1)
+            legacy.write_text(text.replace(statx, statx + "    mov qword ptr [r8 + 40], 4096\n"),
+                              encoding="utf-8")
+            self.run_read_all_at_capacity(cwd, compiler, f"err {errno.EFBIG}")
+
     def test_read_all_fifo_never_blocks_even_without_a_writer(self):
         with tempfile.TemporaryDirectory(dir=self.build, prefix="read-all-fifo-") as tmp:
             cwd = Path(tmp)
@@ -88,16 +126,14 @@ class VstdFs(unittest.TestCase):
     def test_read_all_closes_without_reading_when_statx_omits_required_fields(self):
         with tempfile.TemporaryDirectory(dir=self.build, prefix="statx-mask-") as tmp:
             cwd = Path(tmp)
-            compiler = cwd / "volt"
-            shutil.copy2(VOLT, compiler)
-            shutil.copytree(ROOT / "vstd", cwd / "vstd")
+            compiler = self.copy_compiler_with_vstd(cwd)
             (cwd / "payload.bin").write_bytes(PAYLOAD)
 
             fs = cwd / "vstd/fs.volt"
             text = fs.read_text(encoding="utf-8")
-            read = "                let n: i64 = read(fd, storage.data + storage.len, room)"
+            read = "            let n: i64 = read(fd, dst, room)"
             self.assertEqual(text.count(read), 1)
-            fs.write_text(text.replace(read, '                panic("unexpected read\\n")\n' + read),
+            fs.write_text(text.replace(read, '            panic("unexpected read\\n")\n' + read),
                           encoding="utf-8")
             legacy = cwd / "vstd/fs_legacy.volt"
             text = legacy.read_text(encoding="utf-8")
