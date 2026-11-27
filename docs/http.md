@@ -35,17 +35,27 @@ unsafe fn http_get_ipv4(host: string, port: i64, path: string,
                         response: ptr<ByteBuffer>) -> i64
 unsafe fn http_request_transfer(host: string, port: i64, path: string,
                                 method: string, content_type: string,
-                                body: ptr<u8>, body_len: i64, address: ptr<u8>,
-                                response: ptr<ByteBuffer>,
+                                body: ptr<u8>, body_len: i64, cookie: string,
+                                address: ptr<u8>, response: ptr<ByteBuffer>,
                                 transfer: ptr<HttpTransfer>) -> i64
+unsafe fn http_get_transfer_cookie(host: string, port: i64, path: string,
+                                   cookie: string, address: ptr<u8>,
+                                   response: ptr<ByteBuffer>,
+                                   transfer: ptr<HttpTransfer>) -> i64
 ```
 
 `http_request_transfer` is the general form: `method` is `GET` or `POST`,
-`body`/`body_len` carry an optional request body for `POST`, and
-`content_type` becomes the `Content-Type` header. `http_get_transfer` is a thin
-wrapper that passes `GET` with an empty body. The same request builder backs the
-browser's page loads and the JavaScript `fetch`/`XMLHttpRequest` bridge, so GET
-request bytes are unchanged.
+`body`/`body_len` carry an optional request body for `POST`, `content_type`
+becomes the `Content-Type` header, and a non-empty `cookie` becomes one
+`Cookie` header (up to 4 KiB, control bytes rejected). `http_get_transfer` is a
+thin wrapper that passes `GET` with an empty body and no cookie;
+`http_get_transfer_cookie` is the GET form with a cookie. The stdlib does not
+own a cookie jar: the browser builds and checks cookies itself and passes only
+the final header. The same request builder backs page loads, resources and the
+JavaScript `fetch`/`XMLHttpRequest` bridge, so requests without cookies keep
+their previous bytes. `vstd/tls.volt` exposes the matching
+`tls_http_get_transfer_cookie` and `tls_http_request_general` with the same
+`cookie` argument.
 
 The caller must initialize `response` with `bytes_init` before calling and own
 it for the duration of the call; after use call `bytes_free`. On success the

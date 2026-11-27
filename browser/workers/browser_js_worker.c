@@ -17,7 +17,7 @@
 #include <unistd.h>
 
 enum { ELEMENTS = 64, ID_BYTES = 256, TEXT_BYTES = 4096, SCRIPTS = 16, CODE_BYTES = 65536,
-       FETCH_BYTES = 262144, TYPE_BYTES = 128, URL_BYTES = 8192,
+       FETCH_BYTES = 262144, TYPE_BYTES = 128, URL_BYTES = 8192, DOM_BYTES = 16384,
        FRAME_MAX = 40 + URL_BYTES + TYPE_BYTES + FETCH_BYTES };
 static struct { int64_t node, length; int modified; unsigned char text[TEXT_BYTES]; } elements[ELEMENTS];
 static size_t element_count;
@@ -28,12 +28,40 @@ static unsigned char fetch_ct[TYPE_BYTES];
 static unsigned char fetch_body[FETCH_BYTES];
 static union { unsigned char bytes[FRAME_MAX]; int64_t words[(FRAME_MAX + 7) / 8]; } frame;
 static size_t fetch_url_len, fetch_ct_len, fetch_body_len;
+static unsigned char dom[DOM_BYTES];
+static size_t dom_len;
+static int dom_failed;
+
+static void dom_reset(void) {
+    dom_len = 0;
+    dom_failed = 0;
+}
+
+/* Wire format, mirrored in browser/modules/browser_dom.volt:
+ *   append = [op=1, parent_kind, parent_ref, html_len] (four i64) + html bytes.
+ * parent_kind 0 is a page node index, 1 is a JS-created temporary id. */
+enum { DOM_OP_APPEND = 1, DOM_OP_HEADER = 32 };
+static int64_t dom_append(int64_t kind, int64_t ref, const unsigned char *html, size_t len) {
+    if (len > DOM_BYTES - dom_len - DOM_OP_HEADER) {
+        dom_failed = 1;
+        return -1;
+    }
+    int64_t head[4] = {DOM_OP_APPEND, kind, ref, (int64_t)len};
+    memcpy(dom + dom_len, head, sizeof(head));
+    dom_len += sizeof(head);
+    memcpy(dom + dom_len, html, len);
+    dom_len += len;
+    return 0;
+}
 
 static const char bootstrap[] =
-    "(function(record, request) {'use strict';"
+    "(function(record, request, domAppend) {'use strict';"
     "var create=Object.create, define=Object.defineProperty, str=String;"
     "var apply=Function.prototype.call.bind(Function.prototype.apply);"
-    "var ids=create(null), nodes=create(null), api=create(null);"
+    "var ids=create(null), nodes=create(null), api=create(null), made=create(null);"
+    "var domNext=1, domTags=create(null), REF_NODE=0, REF_TEMP=1;"
+    "var domTagList='div span p a button b i em strong small code pre ul ol li section header footer h1 h2 h3 h4 h5 h6'.split(' ');"
+    "for(var dt=0;dt<domTagList.length;dt++)domTags[domTagList[dt]]=true;"
     "var failed=false;"
     "function invoke(fn,target,ev){try{apply(fn,target,[ev]);}catch(e){failed=true;}}"
     "function listeners(target) {"
@@ -63,22 +91,69 @@ static const char bootstrap[] =
     "doc.getElementById=function(id){return ids[str(id)]||null;};"
     "doc.querySelector=function(s){s=str(s);return s[0]==='#'?doc.getElementById(s.slice(1)):null;};"
     "api.document=doc;"
+    "function domEsc(s){s=str(s);if(s.indexOf('\\u0000')>=0)throw new Error('NUL in DOM text');return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;');}"
+    "function domAttrName(n){n=str(n).toLowerCase();if(!/^[a-z][a-z0-9_-]*$/.test(n)||n.slice(0,2)==='on'||n==='data-volt-id')throw new Error('invalid attribute');return n;}"
+    "function domConnect(el){el.__connected=true;for(var i=0;i<el.__children.length;i++)domConnect(el.__children[i]);}"
+    "function domClass(el){return el.__attrs['class']||'';}"
+    "function domSetClass(el,value){if(value)el.__attrs['class']=value;else delete el.__attrs['class'];}"
+    "function domSerialize(el){"
+    " var out='<'+el.__tag, k;"
+    " for(k in el.__attrs)if(Object.prototype.hasOwnProperty.call(el.__attrs,k))out+=' '+k+'=\"'+domEsc(el.__attrs[k])+'\"';"
+    " out+=' data-volt-id=\"'+el.__temp+'\">';"
+    " if(el.__text)out+=domEsc(el.__text);"
+    " for(var i=0;i<el.__children.length;i++)out+=domSerialize(el.__children[i]);"
+    " return out+'</'+el.__tag+'>';"
+    "}"
+    "function makeElement(tag){"
+    " tag=str(tag).toLowerCase();if(!domTags[tag])throw new Error('unsupported element');"
+    " var el=create(null), fire=listeners(el);"
+    " el.__tag=tag;el.__attrs=create(null);el.__children=[];el.__text='';el.__temp=domNext++;el.__connected=false;"
+    " define(el,'tagName',{value:tag,enumerable:true});"
+    " define(el,'id',{get:function(){return el.__attrs['id']||'';},set:function(v){if(el.__connected)throw new Error('connected element is immutable');var s=str(v);if(s)el.__attrs['id']=s;else delete el.__attrs['id'];if(s)ids[s]=el;},enumerable:true});"
+    " define(el,'className',{get:function(){return domClass(el);},set:function(v){if(el.__connected)throw new Error('connected element is immutable');domSetClass(el,str(v));},enumerable:true});"
+    " el.setAttribute=function(name,value){if(el.__connected)throw new Error('connected element is immutable');name=domAttrName(name);if(value===null||value===undefined)delete el.__attrs[name];else el.__attrs[name]=str(value);if(name==='id'&&value)ids[str(value)]=el;};"
+    " el.getAttribute=function(name){name=domAttrName(name);return el.__attrs[name]===undefined?null:el.__attrs[name];};"
+    " el.hasAttribute=function(name){name=domAttrName(name);return el.__attrs[name]!==undefined;};"
+    " el.removeAttribute=function(name){name=domAttrName(name);if(el.__connected)throw new Error('connected element is immutable');delete el.__attrs[name];};"
+    " el.classList={"
+    "  add:function(){if(el.__connected)throw new Error('connected element is immutable');for(var i=0;i<arguments.length;i++){var v=str(arguments[i]),list=domClass(el).split(/\\s+/),found=false;for(var j=0;j<list.length;j++)if(list[j]===v)found=true;if(!found)domSetClass(el,domClass(el)?domClass(el)+' '+v:v);}},"
+    "  remove:function(){if(el.__connected)throw new Error('connected element is immutable');var v=str(arguments[0]),out=[],list=domClass(el).split(/\\s+/);for(var i=0;i<list.length;i++)if(list[i]&&list[i]!==v)out.push(list[i]);domSetClass(el,out.join(' '));},"
+    "  toggle:function(v){v=str(v);if(el.classList.contains(v)){el.classList.remove(v);return false;}el.classList.add(v);return true;},"
+    "  contains:function(v){v=str(v);var list=domClass(el).split(/\\s+/);for(var i=0;i<list.length;i++)if(list[i]===v)return true;return false;}"
+    " };"
+    " define(el,'textContent',{get:function(){var out=el.__text;for(var i=0;i<el.__children.length;i++)out+=el.__children[i].textContent;return out;},set:function(v){if(el.__connected)throw new Error('connected element is immutable');el.__text=v===null?'':str(v);el.__children=[];},enumerable:true});"
+    " el.appendChild=function(child){if(el.__connected)throw new Error('connected element is immutable');if(!child||!child.__tag)throw new Error('not an element');if(child.__connected)throw new Error('already connected');el.__children.push(child);child.__parent=el;return child;};"
+    " el.onclick=null;"
+    " made[el.__temp]=[el,fire];"
+    " return el;"
+    "}"
+    "doc.createElement=makeElement;"
+    "function clickPair(v){if(v>0)return nodes[v]||null;return made[-v]||null;}"
     "api.add=function(node,slot,id,text){"
     " var el=create(null), fire=listeners(el);"
     " define(el,'id',{value:id,enumerable:true});"
     " define(el,'textContent',{get:function(){return text;},set:function(v){"
     "   var s=v===null?'':str(v);if(s!==text){record(slot,s);text=s;}"
     " },enumerable:true});"
+    " el.__node=node;el.__connected=true;el.__children=[];"
+    " el.appendChild=function(child){"
+    "   if(!child||!child.__tag)throw new Error('not an element');"
+    "   if(child.__connected)throw new Error('already connected');"
+    "   var html=domSerialize(child);"
+    "   domAppend(REF_NODE,node,html);"
+    "   domConnect(child);"
+    "   return child;"
+    " };"
     " if(!ids[id])ids[id]=el;nodes[node]=[el,fire];"
     "};"
     "api.ready=function(){failed=false;docFire('DOMContentLoaded',{type:'DOMContentLoaded',target:doc,currentTarget:doc});return failed;};"
     "api.click=function(path){"
     " failed=false;var first=null, stopped=false, prevented=false;"
-    " for(var i=0;i<path.length;i++)if(nodes[path[i]]){first=nodes[path[i]][0];break;}"
+    " for(var i=0;i<path.length;i++){var pair=clickPair(path[i]);if(pair){first=pair[0];break;}}"
     " var ev={type:'click',target:first,currentTarget:null,defaultPrevented:false,"
     "   preventDefault:function(){prevented=true;ev.defaultPrevented=true;},"
     "   stopPropagation:function(){stopped=true;}};"
-    " for(var j=0;j<path.length&&!stopped;j++)if(nodes[path[j]])nodes[path[j]][1]('click',ev);"
+    " for(var j=0;j<path.length&&!stopped;j++){var pair=clickPair(path[j]);if(pair)pair[1]('click',ev);}"
     " if(!stopped)docFire('click',ev);return (prevented?2:0)+(failed?1:0);"
     "};"
     "api.promise=function(value,failed){return{"
@@ -87,9 +162,15 @@ static const char bootstrap[] =
     "  catch(e){return api.promise(e,true);}},"
     " catch:function(fn){if(failed){try{if(fn)fn(value);}catch(e){}}return api.promise(value,failed);}"
     "};};"
+    "function makeHeaders(type){"
+    " var h={'content-type':type};"
+    " h.get=function(name){var key=str(name).toLowerCase();return h[key]===undefined?null:h[key];};"
+    " h.has=function(name){return h[str(name).toLowerCase()]!==undefined;};"
+    " return h;"
+    "}"
     "function response(status,body,type,url){"
     " return{ok:status>=200&&status<300,status:status,statusText:'',url:url,"
-    "  headers:{'content-type':type},"
+    "  headers:makeHeaders(type),"
     "  text:function(){return api.promise(body,false);},"
     "  json:function(){return api.promise(JSON.parse(body),false);}};"
     "}"
@@ -314,6 +395,17 @@ static duk_ret_t js_request(duk_context *ctx) {
     duk_put_prop_index(ctx, array, 3);
     return 1;
 }
+
+static duk_ret_t js_dom_append(duk_context *ctx) {
+    if (duk_get_top(ctx) < 3) return duk_error(ctx, DUK_ERR_TYPE_ERROR, "domAppend expects three arguments");
+    int64_t kind = duk_get_int(ctx, 0);
+    int64_t ref = duk_get_int(ctx, 1);
+    duk_size_t length = 0;
+    const char *html = duk_require_lstring(ctx, 2, &length);
+    if (dom_append(kind, ref, (const unsigned char *)html, length) < 0)
+        return duk_error(ctx, DUK_ERR_RANGE_ERROR, "DOM patch exceeds the limit");
+    return 0;
+}
 #endif
 
 static int isolate(void) {
@@ -336,18 +428,26 @@ static int isolate(void) {
 }
 
 static void reply(int error, int prevent) {
-    int64_t length = 24;
+    int64_t text_count = 0;
+    if (dirty) for (size_t i = 0; i < element_count; i++) if (elements[i].modified) text_count++;
+    int64_t dom_out = (int64_t)dom_len;
+    if (dom_failed) error = 1;
+    int64_t length = 40 + dom_out;
     if (dirty) for (size_t i = 0; i < element_count; i++) if (elements[i].modified) length += 16 + elements[i].length;
     send_word(length);
     send_word(0); /* typed frame: 0 is the final DOM reply */
     send_word(error);
     send_word(prevent);
+    send_word(text_count);
+    send_word(dom_out);
     if (dirty) for (size_t i = 0; i < element_count; i++) if (elements[i].modified) {
         send_word(elements[i].node);
         send_word(elements[i].length);
         io_exact(elements[i].text, (size_t)elements[i].length, 1);
     }
+    if (dom_out) io_exact(dom, (size_t)dom_out, 1);
     dirty = 0;
+    dom_reset();
 }
 
 #ifdef VOLT_QUICKJS
@@ -381,6 +481,7 @@ static JSValue record_text(JSContext *context, JSValueConst self, int argc, JSVa
 }
 
 static JSValue js_request(JSContext *context, JSValueConst self, int argc, JSValueConst *argv);
+static JSValue js_dom_append(JSContext *context, JSValueConst self, int argc, JSValueConst *argv);
 
 static int engine_init(void) {
     runtime = JS_NewRuntime();
@@ -409,11 +510,19 @@ static int engine_init(void) {
         JS_FreeValue(ctx, record);
         return 1;
     }
-    JSValue arguments[2] = {record, request};
-    api = JS_Call(ctx, fn, JS_UNDEFINED, 2, arguments);
+    JSValue domAppend = JS_NewCFunction(ctx, js_dom_append, "domAppend", 3);
+    if (JS_IsException(domAppend)) {
+        JS_FreeValue(ctx, fn);
+        JS_FreeValue(ctx, record);
+        JS_FreeValue(ctx, request);
+        return 1;
+    }
+    JSValue arguments[3] = {record, request, domAppend};
+    api = JS_Call(ctx, fn, JS_UNDEFINED, 3, arguments);
     JS_FreeValue(ctx, fn);
     JS_FreeValue(ctx, record);
     JS_FreeValue(ctx, request);
+    JS_FreeValue(ctx, domAppend);
     if (JS_IsException(api)) return 1;
     int ok = JS_SetPropertyStr(ctx, global, "document", JS_GetPropertyStr(ctx, api, "document")) >= 0 &&
              JS_SetPropertyStr(ctx, global, "window", JS_DupValue(ctx, global)) >= 0;
@@ -469,6 +578,21 @@ static JSValue js_request(JSContext *context, JSValueConst self, int argc, JSVal
         JS_SetPropertyUint32(context, array, 3, JS_NewStringLen(context, (const char *)fetch_url, fetch_url_len)) < 0)
         return JS_EXCEPTION;
     return array;
+}
+
+static JSValue js_dom_append(JSContext *context, JSValueConst self, int argc, JSValueConst *argv) {
+    (void)self;
+    if (argc < 3) return JS_ThrowTypeError(context, "domAppend expects three arguments");
+    int32_t kind = 0, ref = 0;
+    if (JS_ToInt32(context, &kind, argv[0]) < 0 || JS_ToInt32(context, &ref, argv[1]) < 0)
+        return JS_EXCEPTION;
+    size_t length = 0;
+    const char *html = JS_ToCStringLen(context, &length, argv[2]);
+    if (!html) return JS_EXCEPTION;
+    int64_t status = dom_append(kind, ref, (const unsigned char *)html, length);
+    JS_FreeCString(context, html);
+    if (status < 0) return JS_ThrowRangeError(context, "DOM patch exceeds the limit");
+    return JS_UNDEFINED;
 }
 
 static JSValue dom_call(const char *name, int count, JSValue *args) {
@@ -554,7 +678,8 @@ static int engine_init(void) {
     if (!ctx || duk_peval_lstring(ctx, bootstrap, sizeof(bootstrap) - 1)) return 1;
     duk_push_c_function(ctx, record_text, 2);
     duk_push_c_function(ctx, js_request, 4);
-    if (duk_pcall(ctx, 2)) return 1;
+    duk_push_c_function(ctx, js_dom_append, 3);
+    if (duk_pcall(ctx, 3)) return 1;
     duk_push_heap_stash(ctx);
     duk_dup(ctx, -2);
     duk_put_prop_string(ctx, -2, "volt");
@@ -604,7 +729,7 @@ static int engine_click(size_t n, const int64_t *nodes) {
     duk_push_uint(ctx, (duk_uint_t)n);
     duk_put_prop_string(ctx, path, "length");
     for (duk_uarridx_t i = 0; i < n; i++) {
-        duk_push_uint(ctx, (duk_uint_t)nodes[i]);
+        duk_push_int(ctx, (duk_int_t)nodes[i]);
         duk_put_prop_index(ctx, path, i);
     }
     int result = duk_pcall(ctx, 1) ? 1 : duk_get_int_default(ctx, -1, 1);
@@ -633,6 +758,7 @@ int main(void) {
     }
     size_t budget = CODE_BYTES;
     int errors = 0;
+    dom_reset();
     for (size_t i = 0; i < scripts; i++) {
         size_t n = (size_t)receive_word(1, (int64_t)budget);
         budget -= n;
@@ -653,6 +779,7 @@ int main(void) {
         if (n < 0 || n > 128 || length != 8 * (n + 2)) _exit(1);
         int64_t nodes[128];
         for (size_t i = 0; i < (size_t)n; i++) nodes[i] = head[2 + i];
+        dom_reset();
         int result = engine_click((size_t)n, nodes);
         reply(result & 1, (result >> 1) & 1);
     }

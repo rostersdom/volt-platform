@@ -94,11 +94,15 @@ unsafe fn tls_http_get_bounded(host: string, port: i64, path: string, address: p
     return status
 
 unsafe fn tls_http_get_transfer(host: string, port: i64, path: string, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
-    let request: TlsHttpRequest = TlsHttpRequest(host, port, path, address, false, "GET", "", 0 as ptr<u8>, 0)
+    let request: TlsHttpRequest = TlsHttpRequest(host, port, path, address, false, "GET", "", 0 as ptr<u8>, 0, "")
     return tls_http_request(&request, response, transfer)
 
-unsafe fn tls_http_request_general(host: string, port: i64, path: string, method: string, content_type: string, body: ptr<u8>, body_len: i64, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
-    let request: TlsHttpRequest = TlsHttpRequest(host, port, path, address, false, method, content_type, body, body_len)
+unsafe fn tls_http_get_transfer_cookie(host: string, port: i64, path: string, cookie: string, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
+    let request: TlsHttpRequest = TlsHttpRequest(host, port, path, address, false, "GET", "", 0 as ptr<u8>, 0, cookie)
+    return tls_http_request(&request, response, transfer)
+
+unsafe fn tls_http_request_general(host: string, port: i64, path: string, method: string, content_type: string, body: ptr<u8>, body_len: i64, cookie: string, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
+    let request: TlsHttpRequest = TlsHttpRequest(host, port, path, address, false, method, content_type, body, body_len, cookie)
     return tls_http_request(&request, response, transfer)
 
 struct TlsHttpRequest:
@@ -111,6 +115,7 @@ struct TlsHttpRequest:
     content_type: string
     body: ptr<u8>
     body_len: i64
+    cookie: string
 
 unsafe fn tls_http_request(target: ptr<TlsHttpRequest>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
     let host: string = target.host
@@ -137,10 +142,18 @@ unsafe fn tls_http_request(target: ptr<TlsHttpRequest>, response: ptr<ByteBuffer
         let c: i64 = ct[ci] as i64
         if c < 32 or c == 127: return -22
         ci += 1
+    let cookie_len: i64 = __volt_strlen(target.cookie)
+    if cookie_len > 4096: return -22
+    let cookie_ptr: ptr<char> = target.cookie as ptr<char>
+    ci = 0
+    while ci < cookie_len:
+        let c: i64 = cookie_ptr[ci] as i64
+        if c < 32 or c == 127: return -22
+        ci += 1
     let request: ByteBuffer
     bytes_init(&request)
     defer bytes_free(&request)
-    let status: i64 = bytes_reserve(&request, path_len + host_len + content_len + 160)
+    let status: i64 = bytes_reserve(&request, path_len + host_len + content_len + cookie_len + 160)
     if status < 0: return status
     let p: ptr<char> = target.method as ptr<char>
     let i: i64 = 0
@@ -178,6 +191,10 @@ unsafe fn tls_http_request(target: ptr<TlsHttpRequest>, response: ptr<ByteBuffer
         digit_count -= 1
         if bytes_push(&request, digits[digit_count] as u8) != 0: return -12
     status = http_append_text(&request, "\r\n")
+    if status == 0 and cookie_len > 0:
+        status = http_append_text(&request, "Cookie: ")
+        if status == 0: status = http_append_text(&request, target.cookie)
+        if status == 0: status = http_append_text(&request, "\r\n")
     if status == 0 and target.body_len > 0:
         status = http_append_text(&request, "Content-Type: ")
         if status == 0: status = http_append_text(&request, target.content_type)
@@ -189,6 +206,7 @@ unsafe fn tls_http_request(target: ptr<TlsHttpRequest>, response: ptr<ByteBuffer
         else: status = http_append_text(&request, "Accept-Encoding: identity\r\n")
     if status == 0: status = http_append_text(&request, "Connection: close\r\n\r\n")
     if status < 0: return status
+    if request.len > 8192: return -90
 
     let fd: i64 = http_connect(port, address, transfer)
     if fd < 0: return fd

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Opt-in script execution, DOM IPC, isolation and browser integration."""
+import gzip
 import http.server
 from contextlib import contextmanager
 import os
@@ -10,6 +11,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -357,7 +359,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 script = b"6 * 7;"
                 browser.sendall(struct.pack("<4q", 1, 0, 1, len(script)) + script)
                 with browser.makefile("rb") as response:
-                    self.assertEqual(response.read(32), struct.pack("<4q", 24, 0, 0, 0))
+                    self.assertEqual(response.read(48), struct.pack("<6q", 40, 0, 0, 0, 0, 0))
                 secured, parent = status(child.pid), status("self")
                 self.assertEqual(secured["NoNewPrivs"].strip(), "1")
                 self.assertEqual(secured["Seccomp"].strip(), "2")
@@ -417,6 +419,34 @@ document.getElementById('load').addEventListener('click', function () {
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout, "LoadF:hello-click\n")
         self.assertEqual(requests, ["/page", "/api"])
+
+    def test_click_fetch_does_not_block_the_window(self):
+        fixture = self.dir / "fetch-click"
+        if not fixture.exists():
+            subprocess.run([str(self.compiler), str(FIXTURES / "browser_fetch_click.volt"),
+                            "-o", str(fixture)], cwd=ROOT, check=True, timeout=30)
+        markup = '''<button id="load">Load</button>
+<p id="out">Fallback</p>
+<script>
+document.getElementById('load').addEventListener('click', function () {
+  fetch('/slow').then(function (r) { return r.text(); }).then(function (t) {
+    document.getElementById('out').textContent = 'F:' + t;
+  });
+});
+</script>'''
+
+        def slow():
+            time.sleep(0.8)
+            return b"slow-ok"
+
+        with loopback({"/slow-page": html_response(markup),
+                       "/slow": (slow, {"Content-Type": "text/plain"}, 200)}) as (base, requests):
+            result = subprocess.run([str(fixture), base + "/slow-page"],
+                                    env={"SDL_VIDEODRIVER": "dummy"},
+                                    capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "LoadF:slow-ok\n")
+        self.assertEqual(requests, ["/slow-page", "/slow"])
 
     def test_fetch_and_xhr_use_bounded_same_origin_transport(self):
         def serve(routes, seen):
@@ -509,6 +539,24 @@ fetch('/chunked').then(function (r) { return r.text(); }).then(function (t) {
   document.getElementById('out').textContent = 'C:' + t;
 });
 </script>""", {"Content-Type": "text/html"}, 200),
+            "/norm-page": (b"""<p id="out">Fallback</p><script>
+fetch('/a/../text').then(function (r) { return r.text(); }).then(function (t) {
+  document.getElementById('out').textContent = 'N:' + t;
+});
+</script>""", {"Content-Type": "text/html"}, 200),
+            "/gzip": (gzip.compress(b'{"a":"gz"}'), {"Content-Type": "application/json",
+                                                     "Content-Encoding": "gzip"}, 200),
+            "/gzip-page": (b"""<p id="out">Fallback</p><script>
+fetch('/gzip').then(function (r) { return r.json(); }).then(function (v) {
+  document.getElementById('out').textContent = 'G:' + v.a;
+});
+</script>""", {"Content-Type": "text/html"}, 200),
+            "/headers-page": (b"""<p id="out">Fallback</p><script>
+fetch('/text').then(function (r) {
+  document.getElementById('out').textContent = 'H:' + r.headers.get('Content-Type') + ':' +
+    r.headers.has('missing') + ':' + r.headers.get('missing');
+});
+</script>""", {"Content-Type": "text/html"}, 200),
         }
         server, thread = serve(routes, main_seen)
         base = f"http://127.0.0.1:{server.server_port}"
@@ -519,6 +567,9 @@ fetch('/chunked').then(function (r) { return r.text(); }).then(function (t) {
             moved = self.render(f"{base}/move-page", scripts=True)
             large = self.render(f"{base}/large-page", scripts=True)
             chunked = self.render(f"{base}/chunked-page", scripts=True)
+            normalized = self.render(f"{base}/norm-page", scripts=True)
+            compressed = self.render(f"{base}/gzip-page", scripts=True)
+            headers = self.render(f"{base}/headers-page", scripts=True)
         finally:
             server.shutdown()
             server.server_close()
@@ -539,6 +590,14 @@ fetch('/chunked').then(function (r) { return r.text(); }).then(function (t) {
         self.assertEqual(large.stdout, self.render(self.html("large-reference", "<p>L:100000</p>")).stdout)
         self.assertEqual(chunked.stderr, "")
         self.assertEqual(chunked.stdout, self.render(self.html("chunked-reference", "<p>C:chunk-ok</p>")).stdout)
+        self.assertEqual(normalized.stderr, "")
+        self.assertEqual(normalized.stdout, self.render(self.html("norm-reference", "<p>N:hello</p>")).stdout)
+        self.assertEqual(compressed.stderr, "")
+        self.assertEqual(compressed.stdout, self.render(self.html("gzip-reference", "<p>G:gz</p>")).stdout)
+        self.assertEqual(headers.stderr, "")
+        self.assertEqual(headers.stdout, self.render(self.html(
+            "headers-reference", "<p>H:text/plain:false:null</p>")).stdout)
+        self.assertNotIn(("GET", "/a/../text"), main_seen)
         self.assertEqual(foreign_seen, [])
         self.assertIn(("POST", "/echo", b"ping"), main_seen)
         self.assertIn(("GET", "/move"), main_seen)

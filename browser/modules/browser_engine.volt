@@ -34,6 +34,7 @@ struct BrowserPage:
     document_height: i64
     layout_width: i64
     layout_height: i64
+    styled_nodes: i64
     storage: ptr<BrowserPageStorage>
     url: string
     resource_length: i64

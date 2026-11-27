@@ -10,6 +10,7 @@ unsafe extern fn SDL_CreateThread(entry: fnptr<(ptr<char>) -> i32>, name: ptr<ch
 unsafe extern fn SDL_DetachThread(thread: ptr<char>)
 unsafe extern fn SDL_AtomicGet(state: ptr<i32>) -> i32
 unsafe extern fn SDL_AtomicSet(state: ptr<i32>, value: i32) -> i32
+unsafe extern fn SDL_AtomicCAS(state: ptr<i32>, old_value: i32, new_value: i32) -> i32
 unsafe extern fn SDL_AtomicAdd(state: ptr<i32>, value: i32) -> i32
 unsafe extern fn SDL_CreateWindow(title: ptr<char>, x: i32, y: i32, width: i32, height: i32, flags: i32) -> ptr<char>
 unsafe extern fn SDL_DestroyWindow(window: ptr<char>)

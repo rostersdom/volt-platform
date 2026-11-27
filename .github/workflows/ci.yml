@@ -142,3 +142,7 @@ jobs:
           --require-test browser_visual.BrowserVisual.test_linked_cascade_grid_media_and_png
           --require-test browser_search_bar.BrowserSearchBar.test_explicit_search_flag_sends_the_encoded_query
           --require-test browser_search_bar.BrowserSearchBar.test_typed_text_becomes_a_search_url
+          --require-test browser_cookies.BrowserCookies.test_redirect_set_cookie_is_sent_on_the_next_hop
+          --require-test browser_cookies.BrowserCookies.test_path_attribute_scopes_the_cookie
+          --require-test browser_cookies.BrowserCookies.test_secure_cookie_is_ignored_over_http
+          --require-test browser_dom.BrowserDomCore.test_append_fragment_without_js_worker

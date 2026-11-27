@@ -247,7 +247,10 @@ unsafe fn http_get_address_bounded(host: string, port: i64, path: string, addres
     return http_get_transfer(host, port, path, address, response, &transfer)
 
 unsafe fn http_get_transfer(host: string, port: i64, path: string, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
-    return http_request_transfer(host, port, path, "GET", "", 0 as ptr<u8>, 0, address, response, transfer)
+    return http_request_transfer(host, port, path, "GET", "", 0 as ptr<u8>, 0, "", address, response, transfer)
+
+unsafe fn http_get_transfer_cookie(host: string, port: i64, path: string, cookie: string, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
+    return http_request_transfer(host, port, path, "GET", "", 0 as ptr<u8>, 0, cookie, address, response, transfer)
 
 unsafe fn http_append_number(request: ptr<ByteBuffer>, value: i64) -> i64:
     if value < 0: return -22
@@ -269,7 +272,7 @@ unsafe fn http_append_number(request: ptr<ByteBuffer>, value: i64) -> i64:
     return status
 
 # GET or POST with an optional request body. GET with a body is rejected.
-unsafe fn http_request_transfer(host: string, port: i64, path: string, method: string, content_type: string, body: ptr<u8>, body_len: i64, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
+unsafe fn http_request_transfer(host: string, port: i64, path: string, method: string, content_type: string, body: ptr<u8>, body_len: i64, cookie: string, address: ptr<u8>, response: ptr<ByteBuffer>, transfer: ptr<HttpTransfer>) -> i64:
     response.len = 0
     transfer.clean_eof = false
     if transfer.response_bytes < 1 or transfer.response_bytes == 9223372036854775807 or transfer.body_bytes < 0: return -22
@@ -312,6 +315,14 @@ unsafe fn http_request_transfer(host: string, port: i64, path: string, method: s
         let c: i64 = ct_ptr[i] as i64
         if c < 32 or c == 127: return -22
         i += 1
+    let cookie_ptr: ptr<char> = cookie as ptr<char>
+    let cookie_len: i64 = strlen(cookie_ptr)
+    if cookie_len > 4096: return -22
+    i = 0
+    while i < cookie_len:
+        let c: i64 = cookie_ptr[i] as i64
+        if c < 32 or c == 127: return -22
+        i += 1
     if path_len > 8192:
         return -90
     let encoding_header: string = "Accept-Encoding: identity\r\n"
@@ -329,6 +340,10 @@ unsafe fn http_request_transfer(host: string, port: i64, path: string, method: s
     if status == 0: status = bytes_push(&request, ':' as u8)
     if status == 0: status = http_append_number(&request, port)
     if status == 0: status = http_append_text(&request, "\r\n")
+    if status == 0 and cookie_len > 0:
+        status = http_append_text(&request, "Cookie: ")
+        if status == 0: status = http_append_text(&request, cookie)
+        if status == 0: status = http_append_text(&request, "\r\n")
     if status == 0 and body_len > 0:
         status = http_append_text(&request, "Content-Type: ")
         if status == 0: status = http_append_text(&request, content_type)

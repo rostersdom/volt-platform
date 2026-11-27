@@ -1,5 +1,7 @@
 # Shared production operations for the VOLT-owned native browser.
 use browser_engine
+use browser_cookies
+use browser_dom
 use bytes
 use paint
 use sdl
@@ -1163,6 +1165,7 @@ unsafe fn browser_layout_page(page: ptr<BrowserPage>, document: ptr<CssDocumentC
         Ok(count):
             if count != page.node_count: return -22
         Err(error): return 0 - (error as i64)
+    page.styled_nodes = page.node_count
     return browser_layout_flow(storage, layout, storage.js.text)
 
 unsafe fn browser_layout_flow(storage: ptr<BrowserPageStorage>, layout: ptr<CssLayoutContext>, overrides: ptr<CssTextOverrides>) -> i64:
@@ -1182,13 +1185,14 @@ unsafe fn browser_layout_flow(storage: ptr<BrowserPageStorage>, layout: ptr<CssL
 unsafe fn browser_layout_visual(page: ptr<BrowserPage>, storage: ptr<BrowserPageStorage>, layout: ptr<CssLayoutContext>, overrides: ptr<CssTextOverrides>, transfer: ptr<HttpTransfer>, height: i64) -> i64:
     let visual: ptr<BrowserVisual> = &page.storage.visual
     let resized: bool = page.layout_width != layout.viewport_width or page.layout_height != height
-    let recascade: bool = storage == page.storage or (resized and visual.sheet.viewport_units) or browser_media_changed(&visual.sheet, page.layout_width, layout.viewport_width)
+    let recascade: bool = storage == page.storage or page.styled_nodes != page.node_count or (resized and visual.sheet.viewport_units) or browser_media_changed(&visual.sheet, page.layout_width, layout.viewport_width)
     let styles: ptr<BrowserStyle> = 0 as ptr<BrowserStyle>
     if recascade:
         if buffer_reserve(&storage.visual.styles, page.node_count) < 0: return -12
         styles = buffer_data(&storage.visual.styles)
         let prepared: i64 = browser_visual_styles(&visual.sheet, layout, page.attributes, styles, height, transfer)
         if prepared < 0: return prepared
+        page.styled_nodes = page.node_count
     else: styles = buffer_data(&visual.styles)
     let context: BrowserVisualLayout = BrowserVisualLayout(layout, visual, styles, page.attributes, overrides, transfer)
     let capacity: i64 = max(1024, min(CSS_FRAGMENT_LIMIT, buffer_capacity(&storage.fragments)))
@@ -1244,6 +1248,8 @@ unsafe fn browser_relayout(page: ptr<BrowserPage>, spare: ptr<BrowserPage>, view
     if view.width < 1 or view.width > 4096 or view.height < 1 or view.height > 4096 or page.storage == (0 as ptr<BrowserPageStorage>): return -22
     let scratch: ptr<BrowserPageStorage> = spare.storage
     if scratch == (0 as ptr<BrowserPageStorage>) or scratch == page.storage: return -22
+    # Non-visual layouts keep no parsed CSS to style newly appended nodes.
+    if not page.visual and page.styled_nodes != page.node_count: return -22
     let text_capacity: i64 = browser_text_capacity(page.source_buffer.len - 1, overrides)
     let status: i64 = buffer_reserve(&scratch.boxes, page.node_count)
     if status < 0: return status
@@ -1346,7 +1352,17 @@ unsafe fn browser_js_prepare(page: ptr<BrowserPage>, doc: ptr<BrowserJsDocument>
         elif node.first_child >= 0:
             let child: ptr<HtmlNode> = &doc.nodes[node.first_child]
             if browser_js_add_script(&scripts, (doc.source as ptr<char>) + child.text_start, child.text_length) < 0: return 2
-    return browser_js_begin(&page.storage.js, doc, page.url, &time, &scripts)
+    let dom: ByteBuffer
+    bytes_init(&dom)
+    defer bytes_free(&dom)
+    let status: i64 = browser_js_begin(&page.storage.js, doc, page.url, &time, &scripts, &dom)
+    if status == 2: return 2
+    if dom.len > 0:
+        let applied: i64 = browser_dom_apply(page, &dom, &page.storage.js.text)
+        if applied < 0:
+            browser_js_close(&page.storage.js)
+            return 2
+    return status
 
 unsafe fn browser_prepare_loaded_document(source_buffer: ptr<ByteBuffer>, url: string, page: ptr<BrowserPage>, view: BrowserViewport, transfer: ptr<HttpTransfer>, csp: ptr<BrowserPolicy>) -> i64:
     let policy: BrowserLoadPolicy = BrowserLoadPolicy(csp, 0 as ptr<BrowserScriptPeer>)
@@ -1387,10 +1403,14 @@ unsafe fn browser_prepare_document_with_peer(source_buffer: ptr<ByteBuffer>, url
             let remaining: i64 = http_transfer_remaining(transfer)
             if remaining < 0: return remaining
             overrides = js.text
-            if scripting and js.pid <= 0:
+            let dom_changed: bool = page.node_count != node_count
+            source = source_buffer.data as ptr<char> as string
+            page.source = source
+            if scripting and js.pid <= 0 and not dom_changed:
                 node_count = browser_build_tree(page, source, false)
                 if node_count < 1: return node_count
                 page.node_count = node_count
+            node_count = page.node_count
     if page.visual and page.storage != (0 as ptr<BrowserPageStorage>):
         let collected: i64 = browser_collect_visual(page, transfer, policy)
         if collected < 0: return collected
@@ -1600,11 +1620,16 @@ unsafe fn browser_load_http_peer(url: string, buffer: ptr<ByteBuffer>, final_add
             remaining = http_transfer_remaining(transfer)
             if remaining < 0: return remaining
             if resolved < 0: return resolved
+        let cookie: [4097]char
+        let cookie_len: i64 = browser_cookie_header((&host[0]) as string, (&target[0]) as string, secure, &cookie[0], 4097)
+        let cookie_header: string = ""
+        if cookie_len > 0: cookie_header = (&cookie[0]) as string
         if secure:
-            fetched = tls_http_get_transfer((&host[0]) as string, port[0], (&target[0]) as string, ip, buffer, transfer)
+            fetched = tls_http_get_transfer_cookie((&host[0]) as string, port[0], (&target[0]) as string, cookie_header, ip, buffer, transfer)
         else:
-            fetched = http_get_transfer((&host[0]) as string, port[0], (&target[0]) as string, ip, buffer, transfer)
+            fetched = http_get_transfer_cookie((&host[0]) as string, port[0], (&target[0]) as string, cookie_header, ip, buffer, transfer)
         if fetched < 0: return fetched
+        browser_cookie_capture((&host[0]) as string, (&target[0]) as string, secure, buffer, buffer.len)
         let status: [1]i64
         let location: [8193]char
         location[0] = 0 as char

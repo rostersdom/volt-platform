@@ -60,14 +60,77 @@ VOLT_SEARCH_URL='http://127.0.0.1:8080/?q=' \
    больше трёх.
 4. Воркер получает ответ и разрешает промис.
 
-Запрос синхронный по отношению к воркеру: его стек ждёт ответа. Страница
-остаётся простой и детерминированной, но обработчик клика с `fetch` может
-задержать кадр до 3 с. Это осознанное ограничение первой версии, а не
-event-loop уровня Chrome. `fetch` поддерживает `text()`, `json()`, `ok`,
-`status`, `url` и `headers['content-type']`; `XMLHttpRequest` —
-синхронные `open`/`send`, `status`, `responseText`, `getResponseHeader` и
-`onload`/`onreadystatechange`. HTTP-статусы, включая `404`, разрешают промис;
-сетевые ошибки и нарушение origin — отклоняют.
+Запрос синхронный только по отношению к воркеру: его стек ждёт ответа. При
+клике сам запрос выполняется в фоновом потоке, поэтому окно продолжает
+обрабатывать события; все запросы одного клика делят один абсолютный дедлайн
+3 с. Во время начальной загрузки сценарии уже выполняются в фоновом загрузчике,
+и ожидание там тоже не блокирует окно. Это не event-loop уровня Chrome, но и не
+трёхсекундный замороженный кадр.
+
+`fetch` поддерживает `text()`, `json()`, `ok`, `status`, `url` и
+`headers.get/has`; `XMLHttpRequest` — `open`/`send`, `status`,
+`responseText`, `getResponseHeader` и `onload`/`onreadystatechange`.
+Относительный URL нормализуется (`./` и `../` убираются из пути). Ответы
+`gzip` распаковываются тем же ограниченным zlib-путём, что и документы.
+HTTP-статусы, включая `404`, разрешают промис; сетевые ошибки и нарушение
+origin — отклоняют.
+
+## Cookies и сессии
+
+Cookie-банк принадлежит браузеру, а не воркеру:
+
+- `Set-Cookie` перехватывается на каждом ответе, включая промежуточные
+  перенаправления; `Cookie` подставляется в запрос документа, ресурсов и
+  `fetch` для того же хоста.
+- Cookie host-only: атрибут `Domain` игнорируется, поэтому cookie не уходит
+  соседним поддоменам. `Path` учитывается с границей сегмента, `Secure` —
+  только для HTTPS. `Secure`-cookie, присланная по открытому HTTP, не
+  сохраняется и не удаляет существующую (RFC 6265 §5.3).
+- `HttpOnly` сохраняется, но `document.cookie` сценариям не выдаётся вообще:
+  любая cookie невидима для JS. `fetch`/XHR видят только ответы сервера.
+- Cookie живут в памяти процесса до выхода, на диск не пишутся. Лимит — 64
+  cookie, имя 127 байт, значение 1023 байта, заголовок до 4 КиБ.
+- `Max-Age=0` и отрицательный `Max-Age` удаляют cookie. Атрибут `Expires`
+  **не распознаётся**: cookie без `Max-Age=0` или отрицательного `Max-Age`
+  живёт до выхода процесса, даже если `Expires` уже в прошлом. На диск cookie
+  не пишутся.
+
+## DOM API
+
+Сценарии могут создать и вставить поддерево в существующий элемент с `id`:
+
+```js
+var card = document.createElement('div');
+card.className = 'card';
+card.id = 'card-1';
+card.setAttribute('title', 'Hello');
+card.textContent = 'Привет';
+document.getElementById('out').appendChild(card);
+```
+
+- `document.createElement(tag)` принимает `div span p a button b i em strong
+  small code pre ul ol li section header footer h1 h2 h3 h4 h5 h6`.
+- `appendChild` вставляет поддерево в целевой элемент. Дерево можно собрать
+  целиком в памяти (дети, `textContent`, атрибуты, `classList`) и вставить
+  одним вызовом; вложенные `appendChild` в отсоединённое дерево работают.
+- `setAttribute`, `getAttribute`, `hasAttribute`, `removeAttribute`, `id`,
+  `className`, `classList.add/remove/toggle/contains`, `textContent`.
+- `addEventListener('click')` на созданном элементе работает: путь клика
+  передаёт стабильный временный id, а не индекс узла. `document.getElementById`
+  находит созданные элементы по `id`.
+- После `appendChild` поддерево **неизменно**: `textContent`, `setAttribute` и
+  `classList` на нём бросают ошибку. Это build-once API первой версии;
+  `textContent` существующих целей по-прежнему обновляется.
+- Нет `innerHTML`, `removeChild`, `insertBefore`, `cloneNode`, `<img>`,
+  `<script>`, `<style>`, `<iframe>` и `<svg>`. Текст и значения атрибутов
+  экранируются; имена атрибутов с `on*` и `data-volt-id` запрещены.
+- Лимиты: 128 отслеживаемых созданных узлов на страницу, один DOM-патч до
+  16 КиБ, исходник страницы растёт не выше 2 МиБ, действуют общие лимиты узлов
+  и атрибутов. Переполнение патча бросает исключение в момент
+  `appendChild`/`setAttribute`; уже принятые операции применяются, но браузер
+  сообщает о ошибке сценария.
+- Структурные вставки из обработчика клика применяются к визуальной раскладке
+  окна; headless `--check` клики не обрабатывает.
 
 CSP с `connect-src` пока не разбирается: страницы с любым поддерживаемым CSP
 не запускают сценарии, поэтому сетевой брокер для них недоступен.
@@ -77,6 +140,12 @@ CSP с `connect-src` пока не разбирается: страницы с �
 - `python3 tests/browser_search_bar.py` — распознавание URL, кодирование
   запроса и переопределение провайдера.
 - `python3 tests/browser_javascript.py` — GET, POST, JSON, 404, XHR,
-  same-origin и отказ при чужом origin/перенаправлении.
+  same-origin, отказ при чужом origin/перенаправлении, нормализация URL,
+  `headers.get/has`, gzip, chunked и фоновый fetch без блокировки окна.
+- `python3 tests/browser_cookies.py` — перехват `Set-Cookie` на редиректе,
+  `Path`, `HttpOnly`-невидимость для JS и удаление по `Max-Age=0`.
+- `python3 tests/browser_dom.py` — `createElement`/`appendChild`, атрибуты,
+  `classList`, вложенное дерево, клик по созданному элементу и неизменность
+  после вставки (сравнение скриншотов со статическим HTML).
 - `python3 tests/browser_https.py` — проверенный TLS для документов; HTTPS
-  для `fetch` использует тот же TLS-модуль.
+  для `fetch` и cookie использует тот же TLS-модуль.

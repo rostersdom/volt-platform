@@ -511,7 +511,9 @@ unsafe fn browser_script_click(c: ptr<BrowserControls>, controller: ptr<BrowserN
                 break
     while node > 0 and count < 128:
         count += 1
-        click.request[count] = node
+        let temp: i64 = browser_js_temp_for_node(js, node)
+        if temp > 0: click.request[count] = 0 - temp
+        else: click.request[count] = node
         node = page.nodes[node].parent
     click.request[0] = count
     click.pid = js.pid
@@ -543,10 +545,20 @@ unsafe fn browser_poll_script_click(c: ptr<BrowserControls>, controller: ptr<Bro
         js.notice = 2
         browser_script_follow_link(c, page)
         return true
-    if reply.text != (0 as ptr<CssTextOverrides>):
+    if reply.dom.len > 0:
+        let applied: i64 = browser_dom_apply(page, &reply.dom, &reply.text)
+        if applied < 0:
+            browser_js_text_free(reply.text)
+            bytes_free(&reply.dom)
+            browser_js_stop(js)
+            js.notice = 2
+            if not reply.prevent_default: browser_script_follow_link(c, page)
+            return true
+    if reply.text != (0 as ptr<CssTextOverrides>) or reply.dom.len > 0:
         let view: BrowserViewport = BrowserViewport(page.layout_width, page.layout_height)
         if browser_relayout(page, controller.candidate_page, view, reply.text) < 0:
             browser_js_text_free(reply.text)
+            bytes_free(&reply.dom)
             browser_js_stop(js)
             js.notice = 2
             if not reply.prevent_default: browser_script_follow_link(c, page)
@@ -554,6 +566,7 @@ unsafe fn browser_poll_script_click(c: ptr<BrowserControls>, controller: ptr<Bro
         browser_js_text_free(js.text)
         js.text = reply.text
         browser_fit_page(c, controller, c.zoom, false)
+    bytes_free(&reply.dom)
     if reply.script_error: js.notice = 1
     if not reply.prevent_default: browser_script_follow_link(c, page)
     return true

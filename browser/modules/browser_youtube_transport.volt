@@ -12,5 +12,5 @@ unsafe fn browser_youtube_get(host: string, path: string, buffer: ptr<ByteBuffer
     if resolved != 0: return resolved
     if not browser_youtube_public_ipv4(&ip[0]): return -13
     # HTTP/1.1 permits a framed body without trusting an unauthenticated TLS EOF.
-    let request: TlsHttpRequest = TlsHttpRequest(host, 443, path, &ip[0], true, "GET", "", 0 as ptr<u8>, 0)
+    let request: TlsHttpRequest = TlsHttpRequest(host, 443, path, &ip[0], true, "GET", "", 0 as ptr<u8>, 0, "")
     return tls_http_request(&request, buffer, transfer)

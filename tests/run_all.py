@@ -73,7 +73,7 @@ BROWSER_SUITES = (
     # browser_* suites exercise the browser app/modules directly.
     "browser_navigation", "browser_navigation_controller", "browser_https",
     "browser_launch", "browser_javascript", "browser_visual", "browser_media",
-    "browser_search", "browser_search_bar",
+    "browser_search", "browser_search_bar", "browser_cookies", "browser_dom",
     # SDL2 dummy-driver lifecycle/rendering smoke test: probes SDL2 via
     # pkg-config and skips when absent, but it tests the browser rendering
     # stack, so it belongs here and not in core.

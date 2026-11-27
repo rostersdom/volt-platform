@@ -2,6 +2,8 @@
 # bounded HTTP(S) stack, not a wrapper around a system browser: JavaScript never
 # sees a socket, and every request is resolved, checked and budgeted here.
 use bytes
+use browser_cookies
+use browser_gzip
 use dns
 use http
 use http_frame
@@ -163,6 +165,52 @@ unsafe fn browser_fetch_resolve(base: string, input: string, out: ptr<char>, cap
     if used_path < 0: return used_path
     return browser_fetch_copy_into(out, used_path, p, frag, capacity)
 
+# Remove "." and ".." segments from the path, preserving the query/fragment.
+unsafe fn browser_fetch_normalize(out: ptr<char>, capacity: i64) -> i64:
+    let url: string = out as string
+    let n: i64 = __volt_strlen(url)
+    if n < 8: return 0
+    let scheme: i64 = browser_fetch_web_prefix(out, n)
+    if scheme == 0: return 0
+    let authority_end: i64 = browser_fetch_authority_end(out, n, scheme)
+    let path_end: i64 = authority_end
+    while path_end < n and out[path_end] != '?' and out[path_end] != '#': path_end += 1
+    if path_end == authority_end: return 0
+    let temp: [8193]char
+    let used: i64 = browser_fetch_copy_into(&temp[0], 0, out, authority_end, capacity)
+    if used < 0: return used
+    let marks: [256]i64
+    let depth: i64 = 0
+    let i: i64 = authority_end
+    while i < path_end:
+        i += 1  # path_end starts with '/'
+        let end: i64 = i
+        while end < path_end and out[end] != '/': end += 1
+        let length: i64 = end - i
+        let last: bool = end == path_end
+        if length == 0:
+            if last: used = browser_fetch_copy_into(&temp[0], used, "/" as ptr<char>, 1, capacity)
+        elif length == 1 and out[i] == '.':
+            if last: used = browser_fetch_copy_into(&temp[0], used, "/" as ptr<char>, 1, capacity)
+        elif length == 2 and out[i] == '.' and out[i + 1] == '.':
+            if depth > 0:
+                depth -= 1
+                used = marks[depth]
+            if last: used = browser_fetch_copy_into(&temp[0], used, "/" as ptr<char>, 1, capacity)
+        else:
+            if depth < 256: marks[depth] = used
+            depth += 1
+            used = browser_fetch_copy_into(&temp[0], used, "/" as ptr<char>, 1, capacity)
+            if used < 0: return used
+            used = browser_fetch_copy_into(&temp[0], used, out + i, length, capacity)
+        if used < 0: return used
+        i = end
+    if path_end < n:
+        used = browser_fetch_copy_into(&temp[0], used, out + path_end, n - path_end, capacity)
+    if used < 0: return used
+    browser_fetch_copy_into(out, 0, &temp[0], used, capacity)
+    return used
+
 unsafe fn browser_fetch_same_origin(a: string, b: string) -> bool:
     if browser_fetch_web_prefix(a as ptr<char>, __volt_strlen(a)) != browser_fetch_web_prefix(b as ptr<char>, __volt_strlen(b)): return false
     let ha: [254]char
@@ -242,6 +290,7 @@ unsafe fn browser_fetch_response(out: ptr<ByteBuffer>, transfer: ptr<HttpTransfe
     if line_end + 1 >= header_limit: return -22
     let content_length: i64 = -1
     let chunked: bool = false
+    let gzip: bool = false
     let at: i64 = line_end + 2
     while at + 1 < headers_end - 2:
         let end: i64 = at
@@ -276,7 +325,8 @@ unsafe fn browser_fetch_response(out: ptr<ByteBuffer>, transfer: ptr<HttpTransfe
             if not http_frame_equal(p, value, stop, "chunked"): return -22
             chunked = true
         elif http_frame_equal(p, at, colon, "content-encoding"):
-            if not http_frame_equal(p, value, stop, "identity"): return -1005
+            if http_frame_equal(p, value, stop, "gzip"): gzip = true
+            elif not http_frame_equal(p, value, stop, "identity"): return -1005
         elif http_frame_equal(p, at, colon, "location"):
             if stop - value >= BROWSER_FETCH_URL_BYTES: return -90
             let i: i64 = 0
@@ -291,6 +341,7 @@ unsafe fn browser_fetch_response(out: ptr<ByteBuffer>, transfer: ptr<HttpTransfe
     if chunked:
         let status2: i64 = browser_fetch_dechunk(out, headers_end, BROWSER_FETCH_BODY_BYTES)
         if status2 < 0: return status2
+        if gzip: return browser_gzip_expand(out, 0, transfer)
         return 0
     let body: i64 = n - headers_end
     if body < 0 or body > BROWSER_FETCH_BODY_BYTES: return -90
@@ -301,6 +352,7 @@ unsafe fn browser_fetch_response(out: ptr<ByteBuffer>, transfer: ptr<HttpTransfe
         p[i] = p[headers_end + i]
         i += 1
     out.len = body
+    if gzip: return browser_gzip_expand(out, 0, transfer)
     return 0
 
 # Returns the HTTP status on success or a negative errno. The body is left in
@@ -313,6 +365,7 @@ unsafe fn browser_fetch_perform(base: string, method: string, input: string, bod
     if post and body_len > 0 and body == (0 as ptr<u8>): return -22
     let current: [8193]char
     if browser_fetch_resolve(base, input, &current[0], BROWSER_FETCH_URL_BYTES) <= 0: return -22
+    if browser_fetch_normalize(&current[0], BROWSER_FETCH_URL_BYTES) < 0: return -22
     if not browser_fetch_same_origin(base, (&current[0]) as string): return -13
     out.len = 0
     content_type[0] = 0 as char
@@ -334,14 +387,19 @@ unsafe fn browser_fetch_perform(base: string, method: string, input: string, bod
             if resolved < 0: return resolved
         transfer.body_bytes = BROWSER_FETCH_BODY_BYTES
         transfer.response_bytes = BROWSER_FETCH_BODY_BYTES + HTTP_HEADER_LIMIT
-        transfer.accept_gzip = false
+        transfer.accept_gzip = true
         let secure: bool = browser_fetch_web_prefix((&current[0]) as ptr<char>, __volt_strlen((&current[0]) as string)) == 8
+        let cookie: [4097]char
+        let cookie_len: i64 = browser_cookie_header((&host[0]) as string, (&path[0]) as string, secure, &cookie[0], 4097)
+        let cookie_header: string = ""
+        if cookie_len > 0: cookie_header = (&cookie[0]) as string
         let fetched: i64
         if secure:
-            fetched = tls_http_request_general((&host[0]) as string, port[0], (&path[0]) as string, current_method, request_type, current_body, current_len, ip, out, transfer)
+            fetched = tls_http_request_general((&host[0]) as string, port[0], (&path[0]) as string, current_method, request_type, current_body, current_len, cookie_header, ip, out, transfer)
         else:
-            fetched = http_request_transfer((&host[0]) as string, port[0], (&path[0]) as string, current_method, request_type, current_body, current_len, ip, out, transfer)
+            fetched = http_request_transfer((&host[0]) as string, port[0], (&path[0]) as string, current_method, request_type, current_body, current_len, cookie_header, ip, out, transfer)
         if fetched < 0: return fetched
+        browser_cookie_capture((&host[0]) as string, (&path[0]) as string, secure, out, out.len)
         let status: [1]i64
         let location: [8193]char
         let parsed: i64 = browser_fetch_response(out, transfer, &status[0], &location[0], content_type)
@@ -350,6 +408,7 @@ unsafe fn browser_fetch_perform(base: string, method: string, input: string, bod
             if hop >= BROWSER_FETCH_REDIRECTS: return -1004
             let next: [8193]char
             if browser_fetch_resolve((&current[0]) as string, (&location[0]) as string, &next[0], BROWSER_FETCH_URL_BYTES) <= 0: return -22
+            if browser_fetch_normalize(&next[0], BROWSER_FETCH_URL_BYTES) < 0: return -22
             if not browser_fetch_same_origin(base, (&next[0]) as string): return -13
             browser_fetch_copy_into(&current[0], 0, &next[0], __volt_strlen((&next[0]) as string), BROWSER_FETCH_URL_BYTES)
             if status[0] == 303 or ((status[0] == 301 or status[0] == 302) and current_method == "POST"):
